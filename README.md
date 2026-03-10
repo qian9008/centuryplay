@@ -25,9 +25,9 @@ centuryplay completes the chain by letting android devices stream system audio t
 ## features
 
 - system audio capture: stream any audio playing on your device.
+- airplay 1 & 2: works with all airplay receivers, including homepod and apple tv.
 - auto discovery: automatically find airplay devices via mdns/bonjour.
-- encrypted streaming: aes-128-cbc encryption with rsa key exchange.
-- synchronized playback: proper rtp timing and sync packets.
+- encrypted streaming: homekit transient pairing (airplay 2) or aes-128-cbc (airplay 1).
 - volume control: adjust volume on the receiver.
 - music player integration: now playing metadata and controls.
 
@@ -124,23 +124,28 @@ app/src/main/jniLibs/x86_64/libffi.so
 
 ## how it works
 
-uses android's `audioplaybackcapture` api to capture system audio, then streams it to airplay receivers using raop (remote audio output protocol).
+uses android's `audioplaybackcapture` api to capture system audio, then streams it to airplay receivers.
 
 ```
 ┌─────────────┐     ┌──────────────┐     ┌────────────────┐
-│   android   │────▶│  airplay     │────▶│   airplay      │
-│   device    │     │  streamer    │     │   receiver     │
-│  (audio)    │ pcm │  (this app)  │ rtp │  (speaker)     │
+│   android   │────▶│  centuryplay │────▶│   airplay      │
+│   device    │     │              │     │   receiver     │
+│  (audio)    │ pcm │  kotlin +    │ rtp │  (speaker)     │
+│             │     │  python/pyatv│     │                │
 └─────────────┘     └──────────────┘     └────────────────┘
 ```
 
 ### technical details
 
+**airplay 2** (homepod, apple tv 4k, modern receivers):
+- protocol: homekit transient pairing + rtsp + encrypted rtp.
+- implemented via pyatv 0.17.0 running embedded cpython 3.13 (chaquopy).
 - audio format: l16/44100/2 (16-bit pcm, 44.1khz, stereo).
-- transport: rtp over udp.
-- control: rtsp over tcp (port 5000).
-- encryption: aes-128-cbc with rsa-oaep key exchange.
-- timing: ntp-style timestamps with sync packets.
+
+**airplay 1** (shairport-sync, airport express, older receivers):
+- protocol: rtsp + rtp with aes-128-cbc encryption.
+- implemented natively in kotlin.
+- audio format: l16/44100/2 (16-bit pcm, 44.1khz, stereo).
 
 see [docs/airplay_protocol.md](docs/AIRPLAY_PROTOCOL.md) for detailed protocol documentation.
 
@@ -162,6 +167,12 @@ see [docs/airplay_protocol.md](docs/AIRPLAY_PROTOCOL.md) for detailed protocol d
 - latency: inherent ~2s buffer latency.
 
 ## changelog
+
+### v2.0 (march 2026)
+- airplay 2 support: stream to homepod, apple tv 4k, and modern airplay 2 receivers.
+- embedded python runtime via chaquopy for pyatv integration.
+- cross-compiled libffi for android with automated build script.
+- improved audio buffering to reduce stream interruptions.
 
 ### v1.0 (january 2026)
 - music player integration: real-time metadata (title, artist, art) and controls.
