@@ -7,9 +7,9 @@
     public static int d(...);
 }
 
-# Keep Bouncy Castle crypto
--keep class org.bouncycastle.** { *; }
--dontwarn org.bouncycastle.**
+# Keep Chaquopy Python
+-keep class com.chaquo.** { *; }
+-dontwarn com.chaquo.**
 
 # Keep jmDNS
 -keep class javax.jmdns.** { *; }

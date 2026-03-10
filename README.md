@@ -3,7 +3,7 @@
 stream audio from your android device to airplay speakers.
 
 ![android](https://img.shields.io/badge/android-10%2B-green)
-![airplay](https://img.shields.io/badge/airplay-v1-blue)
+![airplay](https://img.shields.io/badge/airplay-v1%20%2B%20v2-blue)
 ![license](https://img.shields.io/badge/license-mit-yellow)
 
 <div align="center">
@@ -59,7 +59,7 @@ bottom line: excellent quality, but not bit-perfect hi-res. cd quality (16-bit/4
 | protocol | status | notes |
 |----------|--------|-------|
 | airplay 1 (raop) | working | l16 pcm audio, encrypted |
-| airplay 2 | in progress | coming soon |
+| airplay 2 | working | via pyatv, homekit transient pairing |
 
 ## requirements
 
@@ -128,8 +128,8 @@ see [docs/airplay_protocol.md](docs/AIRPLAY_PROTOCOL.md) for detailed protocol d
 | shairport-sync v3.x | airplay 1 | working | |
 | airport express | airplay 1 | working | |
 | apple tv (gen 2-3) | airplay 1 | working | |
-| apple tv 4k | airplay 2 | requires airplay 2 | in development |
-| homepod / mini | airplay 2 | requires airplay 2 | in development |
+| apple tv 4k | airplay 2 | working | via pyatv |
+| homepod / mini | airplay 2 | working | via pyatv |
 | airscreen (android)| airplay 1 | issues | compatibility variations |
 
 ## limitations
@@ -163,12 +163,12 @@ see [development.md](DEVELOPMENT.md) for notes.
 
 ### tech stack
 
-- language: kotlin
+- language: kotlin + python (via chaquopy)
 - ui: android views (viewbinding)
 - architecture: mvvm + stateflow
 - concurrency: coroutines + flow
-- networking: raw sockets, jmdns
-- crypto: bouncycastle
+- airplay 1: raw sockets, jmdns, bouncycastle
+- airplay 2: pyatv 0.17.0 (embedded cpython 3.13 via chaquopy)
 
 ## contributing
 
@@ -178,9 +178,30 @@ contributions welcome. submit a pull request.
 
 mit license. see [license](LICENSE) file.
 
+## third-party licenses
+
+this project uses the following open-source libraries:
+
+| library | license | usage |
+|---------|---------|-------|
+| [pyatv](https://github.com/postlund/pyatv) | MIT | airplay 2 protocol |
+| [chaquopy](https://chaquo.com/chaquopy/) | MIT | python runtime for android |
+| [libffi](https://github.com/libffi/libffi) | MIT | foreign function interface (cross-compiled for android) |
+| [cffi](https://cffi.readthedocs.io/) | MIT | c foreign function interface for python |
+| [cryptography](https://github.com/pyca/cryptography) | Apache 2.0 / BSD-3 | tls and encryption |
+| [zeroconf](https://github.com/jstasiak/python-zeroconf) | LGPL v2.1 | mdns service discovery |
+| [protobuf](https://github.com/protocolbuffers/protobuf) | BSD-3 | protocol buffer serialization |
+| [aiohttp](https://github.com/aio-libs/aiohttp) | Apache 2.0 | async http client |
+| [jmDNS](https://github.com/jmdns/jmdns) | Apache 2.0 | java mdns discovery |
+| [bouncycastle](https://www.bouncycastle.org/) | MIT | cryptography (airplay 1) |
+| [AndroidX](https://developer.android.com/jetpack/androidx) | Apache 2.0 | android support libraries |
+
+full license texts are included with their respective packages.
+
 ## acknowledgments
 
 - [shairport-sync](https://github.com/mikebrady/shairport-sync)
+- [pyatv](https://github.com/postlund/pyatv) - the airplay 2 implementation that made this possible
 - [unofficial airplay protocol spec](https://nto.github.io/AirPlay.html)
 
 ---

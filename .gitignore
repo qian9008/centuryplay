@@ -44,3 +44,6 @@ Thumbs.db
 # Docker (not needed for this project)
 docker-compose.yml
 Dockerfile
+
+# Local test scripts
+pyatv_test/

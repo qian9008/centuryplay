@@ -14,13 +14,13 @@ import android.media.AudioPlaybackCaptureConfiguration
 import android.media.AudioRecord
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
-import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import com.airplay.streamer.MainActivity
 import com.airplay.streamer.R
-import com.airplay.streamer.raop.RaopClient
 import com.airplay.streamer.util.LogServer
+import com.chaquo.python.Python
+import com.chaquo.python.PyObject
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -28,11 +28,10 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 
 /**
  * Foreground service that captures system audio using MediaProjection/AudioPlaybackCapture
- * and streams it to an AirPlay speaker via RAOP
+ * and streams it to an AirPlay 2 speaker via pyatv (Python bridge)
  */
 class AudioCaptureService : Service() {
     companion object {
@@ -45,7 +44,8 @@ class AudioCaptureService : Service() {
         private const val AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT
         private const val FRAMES_PER_PACKET = 352
         private const val BYTES_PER_FRAME = 4 // 16-bit stereo = 4 bytes
-        private const val BUFFER_SIZE = FRAMES_PER_PACKET * BYTES_PER_FRAME
+        // Send 4 RTP packets worth of audio per JNI call to reduce overhead
+        private const val BUFFER_SIZE = FRAMES_PER_PACKET * BYTES_PER_FRAME * 4
 
         const val ACTION_START = "com.airplay.streamer.START"
         const val ACTION_STOP = "com.airplay.streamer.STOP"
@@ -64,8 +64,8 @@ class AudioCaptureService : Service() {
 
     private var mediaProjection: MediaProjection? = null
     private var audioRecord: AudioRecord? = null
-    private var raopClient: RaopClient? = null
     private var captureJob: Job? = null
+    private var pyBridge: PyObject? = null
 
     private var isCapturing = false
     private var deviceName: String = "AirPlay Speaker"
@@ -118,7 +118,7 @@ class AudioCaptureService : Service() {
         serviceScope.launch {
             try {
                 // Get MediaProjection
-                val projectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) 
+                val projectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE)
                     as MediaProjectionManager
                 mediaProjection = projectionManager.getMediaProjection(resultCode, resultData)
 
@@ -127,43 +127,26 @@ class AudioCaptureService : Service() {
                     return@launch
                 }
 
-                LogServer.log("Protocol force: AirPlay 1 (RAOP)")
+                LogServer.log("Starting pyatv AirPlay connection to $host:$port")
 
-                // AirPlay 1 (RAOP) Path
-                LogServer.log("Starting AirPlay 1 (RAOP) connection to $host:$port")
-                raopClient = RaopClient(host, port)
-                
-                // Set callback to handle server disconnects
-                raopClient?.callback = object : RaopClient.StreamingCallback {
-                    override fun onConnected() {
-                        LogServer.log("RAOP callback: Connected")
-                    }
-                    
-                    override fun onDisconnected() {
-                        LogServer.log("RAOP callback: Server disconnected - stopping service")
-                        // Post to main thread to stop the service
-                        android.os.Handler(android.os.Looper.getMainLooper()).post {
-                            stopCapture()
-                            stopSelf()
-                        }
-                    }
-                    
-                    override fun onError(error: String) {
-                        LogServer.log("RAOP callback: Error - $error")
-                    }
-                }
-                
-                val connected = raopClient?.connect() ?: false
+                // Initialize Python bridge
+                val py = Python.getInstance()
+                pyBridge = py.getModule("airplay_bridge")
+
+                // Connect to AirPlay device via pyatv
+                val connected = pyBridge?.callAttr("connect", host, port)?.toBoolean() ?: false
 
                 if (!connected) {
-                    LogServer.log("Failed to connect to RAOP server")
+                    val error = pyBridge?.callAttr("get_error")?.toString() ?: "Unknown error"
+                    LogServer.log("Failed to connect via pyatv: $error")
                     stopCapture()
                     return@launch
                 }
 
-                LogServer.log("RAOP connection established, setting initial volume")
-                // Set initial volume
-                raopClient?.setVolume(0.8f)
+                LogServer.log("pyatv connected to $deviceName")
+
+                // Start the pyatv stream (non-blocking, runs in Python thread)
+                pyBridge?.callAttr("start_stream")
 
                 // Try AudioPlaybackCapture
                 val captureStarted = tryAudioPlaybackCapture()
@@ -171,7 +154,7 @@ class AudioCaptureService : Service() {
                 if (captureStarted) {
                     isCapturing = true
                     onStateChanged?.invoke(true)
-                    LogServer.log("Audio capture started, beginning stream loop")
+                    LogServer.log("Audio capture started, feeding PCM to pyatv")
                     startAudioStreamLoop()
                 } else {
                     LogServer.log("Audio capture failed (possibly DRM blocked)")
@@ -179,7 +162,7 @@ class AudioCaptureService : Service() {
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
-                LogServer.log("Streaming/Pairing Error: ${e.message}")
+                LogServer.log("Streaming Error: ${e.message}")
                 stopCapture()
             }
         }
@@ -231,7 +214,12 @@ class AudioCaptureService : Service() {
                 val bytesRead = audioRecord?.read(buffer, 0, BUFFER_SIZE) ?: -1
 
                 if (bytesRead > 0) {
-                    raopClient?.streamAudio(buffer.copyOf(bytesRead))
+                    try {
+                        pyBridge?.callAttr("send_audio", buffer.copyOf(bytesRead))
+                    } catch (e: Exception) {
+                        LogServer.log("Error sending audio to pyatv: ${e.message}")
+                        break
+                    }
                 } else if (bytesRead < 0) {
                     // Error reading audio
                     break
@@ -241,16 +229,16 @@ class AudioCaptureService : Service() {
     }
 
     private fun stopCapture() {
-        if (!isCapturing && raopClient == null) return // Already stopped
-        
+        if (!isCapturing && pyBridge == null) return // Already stopped
+
         LogServer.log("stopCapture() called - cleaning up")
-        
+
         // Pause media playback so audio doesn't continue on phone speaker
         pauseMediaPlayback()
-        
+
         // Set flag first to stop loops
         isCapturing = false
-        
+
         // Cancel the capture job
         captureJob?.cancel()
         captureJob = null
@@ -268,21 +256,18 @@ class AudioCaptureService : Service() {
         }
         audioRecord = null
 
-        // Disconnect clients in background to avoid blocking main thread
-        // IMPORTANT: Clear callback first to prevent recursion (disconnect triggers callback -> triggers stopCapture)
-        raopClient?.callback = null
-        
+        // Disconnect pyatv
         serviceScope.launch(Dispatchers.IO) {
             try {
-                raopClient?.disconnect()
+                pyBridge?.callAttr("disconnect")
             } catch (e: Exception) {
-                LogServer.log("Error disconnecting RAOP client: ${e.message}")
+                LogServer.log("Error disconnecting pyatv: ${e.message}")
             } finally {
-                raopClient = null
+                pyBridge = null
             }
         }
 
-        // Stop MediaProjection - this MUST be called to stop screen sharing indicator
+        // Stop MediaProjection
         try {
             mediaProjection?.stop()
             LogServer.log("MediaProjection stopped")
@@ -293,10 +278,10 @@ class AudioCaptureService : Service() {
 
         // Notify UI
         onStateChanged?.invoke(false)
-        
+
         // Remove foreground notification
         stopForeground(STOP_FOREGROUND_REMOVE)
-        
+
         LogServer.log("stopCapture() complete")
     }
 
@@ -308,7 +293,7 @@ class AudioCaptureService : Service() {
         ).apply {
             description = "Shows when streaming to AirPlay speaker"
         }
-        
+
         val notificationManager = getSystemService(NotificationManager::class.java)
         notificationManager.createNotificationChannel(channel)
     }
@@ -318,7 +303,7 @@ class AudioCaptureService : Service() {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
         }
         val pendingIntent = PendingIntent.getActivity(
-            this, 0, intent, 
+            this, 0, intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
@@ -348,7 +333,7 @@ class AudioCaptureService : Service() {
     fun setVolume(volume: Float) {
         serviceScope.launch {
             try {
-                raopClient?.setVolume(volume)
+                pyBridge?.callAttr("set_volume", volume)
                 LogServer.log("Volume set to ${(volume * 100).toInt()}%")
             } catch (e: Exception) {
                 LogServer.log("Failed to set volume: ${e.message}")
@@ -358,13 +343,11 @@ class AudioCaptureService : Service() {
 
     /**
      * Pause media playback using AudioManager's media key event
-     * This prevents audio from suddenly playing through phone speakers after disconnect
      */
     private fun pauseMediaPlayback() {
         try {
             val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
             if (audioManager.isMusicActive) {
-                // Send media pause key event
                 val eventTime = android.os.SystemClock.uptimeMillis()
                 val downEvent = android.view.KeyEvent(
                     eventTime, eventTime,

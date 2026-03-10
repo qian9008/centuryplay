@@ -50,13 +50,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         updateStatus("searching for airplay speakers...")
                     }
                     is DiscoveryEvent.DeviceFound -> {
-                        // Filter out AirPlay 2 devices (protocolVersion == 2)
-                        // Only add if it's strictly AirPlay 1 (RAOP)
-                        if (event.device.protocolVersion != 2) {
-                            val key = "${event.device.host}:${event.device.port}"
-                            discoveredDevices[key] = event.device
-                            updateDeviceList()
-                        }
+                        val key = "${event.device.host}:${event.device.port}"
+                        discoveredDevices[key] = event.device
+                        updateDeviceList()
                     }
                     is DiscoveryEvent.DeviceLost -> {
                         val key = "${event.device.host}:${event.device.port}"
