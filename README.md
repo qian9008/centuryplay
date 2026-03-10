@@ -78,7 +78,7 @@ bottom line: excellent quality, but not bit-perfect hi-res. cd quality (16-bit/4
 
 2. build with gradle:
    ```bash
-   ./gradlew assembledbug
+   ./gradlew assembleDebug
    ```
 
 3. install the apk:
@@ -89,6 +89,30 @@ bottom line: excellent quality, but not bit-perfect hi-res. cd quality (16-bit/4
 ### from release
 
 download the latest apk from the [releases](https://github.com/g8row/centuryplay/releases) page.
+
+### building libffi for android (optional)
+
+the pre-compiled `libffi.so` files for arm64-v8a and x86_64 are included in the repo under `app/src/main/jniLibs/`. you only need to rebuild them if you want to target a different android abi or update the library.
+
+**why libffi?** chaquopy's cffi package (`_cffi_backend.so`) dynamically links `libffi.so`, which android doesn't ship. the library must be cross-compiled from source.
+
+**why version 3.3 specifically?** chaquopy's cffi expects symbol version `LIBFFI_BASE_7.0`. libffi 3.4+ exports `LIBFFI_BASE_8.0` instead, causing a runtime symbol lookup failure.
+
+prerequisites:
+- android ndk (r25+, install via android studio sdk manager)
+- autoconf, automake, libtool, make (`brew install autoconf automake libtool` on macos)
+
+```bash
+./scripts/build-libffi.sh
+# or specify ndk path explicitly:
+./scripts/build-libffi.sh /path/to/android-ndk
+```
+
+this produces:
+```
+app/src/main/jniLibs/arm64-v8a/libffi.so
+app/src/main/jniLibs/x86_64/libffi.so
+```
 
 ## usage
 

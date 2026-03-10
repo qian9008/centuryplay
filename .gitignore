@@ -47,3 +47,6 @@ Dockerfile
 
 # Local test scripts
 pyatv_test/
+
+# libffi build artifacts
+build/libffi-build/
