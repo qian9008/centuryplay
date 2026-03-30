@@ -40,7 +40,7 @@ jobs:
         ndk: 26.1.10909125
         
     - name: Cache Gradle packages
-      uses: actions/cache@v3
+      uses: actions/cache@v4
       with:
         path: |
           ~/.gradle/caches
@@ -50,7 +50,7 @@ jobs:
           ${{ runner.os }}-gradle-
           
     - name: Cache Android build cache
-      uses: actions/cache@v3
+      uses: actions/cache@v4
       with:
         path: |
           ~/.android/build-cache
@@ -87,7 +87,7 @@ jobs:
       run: ./gradlew test
       
     - name: Upload Debug APK
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: debug-apk
         path: app/build/outputs/apk/debug/app-debug.apk
@@ -95,21 +95,21 @@ jobs:
         
     - name: Upload Release APK
       if: env.SIGNING_KEY_ALIAS != ''
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: release-apk
         path: app/build/outputs/apk/release/app-release.apk
         retention-days: 90
         
     - name: Upload Lint Results
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       if: always()
       with:
         name: lint-results
         path: app/build/reports/lint-results.html
         
     - name: Upload Test Results
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       if: always()
       with:
         name: test-results
