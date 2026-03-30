@@ -1,0 +1,76 @@
+# Docker Compose for Cloud Build Environment
+version: '3.8'
+
+services:
+  android-builder:
+    image: androidsdk/android-35:latest
+    container_name: centuryplay-builder
+    working_dir: /app
+    volumes:
+      - .:/app
+      - gradle-cache:/root/.gradle
+      - android-cache:/root/.android
+    environment:
+      - JAVA_HOME=/opt/java/openjdk
+      - ANDROID_SDK_ROOT=/opt/android-sdk
+      - GRADLE_OPTS=-Xmx4g -Dorg.gradle.daemon=false
+    command: >
+      bash -c "
+        chmod +x gradlew &&
+        ./gradlew clean assembleDebug assembleRelease &&
+        echo 'Build completed successfully!' &&
+        ls -la app/build/outputs/apk/
+      "
+    networks:
+      - build-network
+
+  security-scanner:
+    image: aquasec/trivy:latest
+    container_name: centuryplay-scanner
+    volumes:
+      - .:/app
+      - trivy-cache:/root/.cache/trivy
+    command: >
+      sh -c "
+        trivy fs --format json --output /app/trivy-report.json /app &&
+        trivy fs --format table /app
+      "
+    depends_on:
+      - android-builder
+    networks:
+      - build-network
+
+  test-runner:
+    image: androidsdk/android-35:latest
+    container_name: centuryplay-tester
+    working_dir: /app
+    volumes:
+      - .:/app
+      - gradle-cache:/root/.gradle
+      - android-cache:/root/.android
+    environment:
+      - JAVA_HOME=/opt/java/openjdk
+      - ANDROID_SDK_ROOT=/opt/android-sdk
+    command: >
+      bash -c "
+        chmod +x gradlew &&
+        ./gradlew test lint &&
+        echo 'Tests completed successfully!' &&
+        ls -la app/build/reports/
+      "
+    depends_on:
+      - android-builder
+    networks:
+      - build-network
+
+volumes:
+  gradle-cache:
+    driver: local
+  android-cache:
+    driver: local
+  trivy-cache:
+    driver: local
+
+networks:
+  build-network:
+    driver: bridge

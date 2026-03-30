@@ -51,15 +51,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }
                     is DiscoveryEvent.DeviceFound -> {
                         // Filter out AirPlay 2 devices (protocolVersion == 2)
-                        // Only add if it's strictly AirPlay 1 (RAOP)
+                        // Only add if it's strictly AirPlay 1 (RAOP) or if we want to show all
                         if (event.device.protocolVersion != 2) {
-                            val key = "${event.device.host}:${event.device.port}"
+                            val key = "${event.device.name}:${event.device.host}:${event.device.port}"
                             discoveredDevices[key] = event.device
                             updateDeviceList()
                         }
                     }
                     is DiscoveryEvent.DeviceLost -> {
-                        val key = "${event.device.host}:${event.device.port}"
+                        val key = "${event.device.name}:${event.device.host}:${event.device.port}"
                         discoveredDevices.remove(key)
                         updateDeviceList()
                     }
@@ -96,7 +96,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun addManualDevice(device: AirPlayDevice) {
-        val key = "${device.host}:${device.port}"
+        val key = "${device.name}:${device.host}:${device.port}"
         discoveredDevices[key] = device
         updateDeviceList()
     }

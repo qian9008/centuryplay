@@ -90,6 +90,46 @@ bottom line: excellent quality, but not bit-perfect hi-res. cd quality (16-bit/4
 
 download the latest apk from the [releases](https://github.com/g8row/centuryplay/releases) page.
 
+### cloud build
+
+use our automated cloud build system for fast, reliable builds:
+
+#### github actions (recommended)
+- push to `main` or `develop` branch to trigger automatic builds
+- create a release to build and publish signed release apks
+- manual builds available via actions tab
+
+#### local cloud build script
+```bash
+# build all variants (debug + release + tests + lint)
+./scripts/cloud-build.sh
+
+# build only debug
+./scripts/cloud-build.sh debug
+
+# build only release
+./scripts/cloud-build.sh release
+
+# run tests only
+./scripts/cloud-build.sh test
+```
+
+#### docker-based builds
+```bash
+# using docker compose
+docker-compose -f docker-compose.build.yml up --build
+
+# individual services
+docker-compose -f docker-compose.build.yml run android-builder
+```
+
+#### gitlab ci/cd
+- automatically builds on push to branches
+- supports multi-stage pipelines (build → test → security → deploy)
+- artifact retention and deployment automation
+
+see [`.windsurf/workflows/cloud-build.md`](.windsurf/workflows/cloud-build.md) for detailed cloud build configuration.
+
 ## usage
 
 1. grant permissions: requires audio recording permission for capture.

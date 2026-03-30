@@ -1,0 +1,177 @@
+# GitLab CI/CD configuration for Century Play Android App
+
+stages:
+  - build
+  - test
+  - security
+  - deploy
+
+variables:
+  ANDROID_COMPILE_SDK: "35"
+  ANDROID_BUILD_TOOLS: "35.0.0"
+  ANDROID_SDK_TOOLS: "11076708"
+  GRADLE_OPTS: "-Dorg.gradle.daemon=false -Dorg.gradle.workers.max=2"
+  GRADLE_USER_HOME: "$CI_PROJECT_DIR/.gradle"
+
+cache:
+  paths:
+    - .gradle/wrapper
+    - .gradle/caches
+    - .android/build-cache
+
+before_script:
+  - apt-get --quiet update --yes
+  - apt-get --quiet install --yes wget tar unzip lib32stdc++6 lib32z1 openjdk-21-jdk
+  - export JAVA_HOME="/usr/lib/jvm/java-21-openjdk-amd64"
+  - wget --quiet --output-document=/tmp/android-sdk.zip https://dl.google.com/android/repository/commandlinetools-linux-${ANDROID_SDK_TOOLS}_latest.zip
+  - unzip /tmp/android-sdk.zip -d /tmp/android-sdk
+  - mkdir -p $ANDROID_SDK_ROOT/cmdline-tools/latest
+  - mv /tmp/android-sdk/cmdline-tools/* $ANDROID_SDK_ROOT/cmdline-tools/latest/
+  - export ANDROID_SDK_ROOT="/tmp/android-sdk"
+  - export PATH=$PATH:$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$ANDROID_SDK_ROOT/platform-tools
+  - echo y | sdkmanager "platforms;android-${ANDROID_COMPILE_SDK}" "build-tools;${ANDROID_BUILD_TOOLS}" "platform-tools"
+  - chmod +x gradlew
+
+# Build Debug APK
+build_debug:
+  stage: build
+  script:
+    - echo "Building debug APK..."
+    - ./gradlew assembleDebug
+    - echo "Debug APK built successfully"
+  artifacts:
+    paths:
+      - app/build/outputs/apk/debug/app-debug.apk
+    expire_in: 1 week
+    reports:
+      junit: app/build/reports/test/testDebugUnitTest/**/*.xml
+  tags:
+    - docker
+    - linux
+
+# Build Release APK
+build_release:
+  stage: build
+  script:
+    - echo "Building release APK..."
+    - ./gradlew assembleRelease
+    - echo "Release APK built successfully"
+  artifacts:
+    paths:
+      - app/build/outputs/apk/release/app-release.apk
+    expire_in: 1 month
+  only:
+    - main
+    - tags
+    - develop
+  tags:
+    - docker
+    - linux
+
+# Run Unit Tests
+unit_tests:
+  stage: test
+  script:
+    - echo "Running unit tests..."
+    - ./gradlew test
+    - echo "Unit tests completed"
+  artifacts:
+    paths:
+      - app/build/reports/tests/
+    expire_in: 1 week
+    reports:
+      junit: app/build/reports/test/testDebugUnitTest/**/*.xml
+  coverage: '/Total coverage: (\d+\.\d+)%/'
+  tags:
+    - docker
+    - linux
+
+# Run Lint Analysis
+lint_analysis:
+  stage: test
+  script:
+    - echo "Running lint analysis..."
+    - ./gradlew lint
+    - echo "Lint analysis completed"
+  artifacts:
+    paths:
+      - app/build/reports/lint-results.html
+      - app/build/reports/lint-results.xml
+    expire_in: 1 week
+  allow_failure: true
+  tags:
+    - docker
+    - linux
+
+# Security Scan
+security_scan:
+  stage: security
+  script:
+    - echo "Running security scan..."
+    - apt-get --quiet install --yes python3 python3-pip
+    - pip3 install safety bandit
+    - safety check --json --output safety-report.json || true
+    - bandit -r . -f json -o bandit-report.json || true
+    - echo "Security scan completed"
+  artifacts:
+    paths:
+      - safety-report.json
+      - bandit-report.json
+    expire_in: 1 week
+  allow_failure: true
+  tags:
+    - docker
+    - linux
+
+# Deploy to Testing Environment
+deploy_test:
+  stage: deploy
+  script:
+    - echo "Deploying to test environment..."
+    - echo "Upload APK to testing server"
+    # Add your deployment commands here
+  environment:
+    name: test
+    url: https://test.example.com
+  only:
+    - develop
+  when: manual
+  tags:
+    - docker
+    - linux
+
+# Deploy to Production
+deploy_production:
+  stage: deploy
+  script:
+    - echo "Deploying to production..."
+    - echo "Upload APK to production server"
+    # Add your deployment commands here
+  environment:
+    name: production
+    url: https://play.google.com/store/apps/details?id=com.airplay.streamer
+  only:
+    - main
+    - tags
+  when: manual
+  tags:
+    - docker
+    - linux
+
+# Create Release
+create_release:
+  stage: deploy
+  script:
+    - echo "Creating release..."
+    - ./gradlew assembleRelease
+    - echo "Release created successfully"
+  artifacts:
+    paths:
+      - app/build/outputs/apk/release/app-release.apk
+    expire_in: never
+  only:
+    - tags
+  when: manual
+  tags:
+    - docker
+    - linux

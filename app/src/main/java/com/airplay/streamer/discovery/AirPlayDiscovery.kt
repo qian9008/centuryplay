@@ -50,7 +50,7 @@ class AirPlayDiscovery(
     private var jmDNS: JmDNS? = null
     private var multicastLock: WifiManager.MulticastLock? = null
     
-    // Track discovered devices to merge RAOP/AirPlay2 for same device
+    // Track discovered devices by unique key (name:host:port) instead of just host
     private val discoveredDevices = mutableMapOf<String, AirPlayDevice>()
 
     /**
@@ -90,7 +90,8 @@ class AirPlayDiscovery(
             override fun serviceRemoved(event: ServiceEvent) {
                 val device = parseServiceEvent(event, isRaop = false)
                 if (device != null) {
-                    discoveredDevices.remove(device.host)
+                    val deviceKey = getDeviceKey(device)
+                    discoveredDevices.remove(deviceKey)
                     trySend(DiscoveryEvent.DeviceLost(device))
                 }
             }
@@ -98,15 +99,10 @@ class AirPlayDiscovery(
             override fun serviceResolved(event: ServiceEvent) {
                 val device = parseServiceEvent(event, isRaop = false)
                 if (device != null) {
-                    val existingDevice = discoveredDevices[device.host]
-                    val mergedDevice = if (existingDevice != null) {
-                        // Merge: keep RAOP port if already discovered
-                        device.copy(raopPort = existingDevice.raopPort)
-                    } else {
-                        device
-                    }
-                    discoveredDevices[device.host] = mergedDevice
-                    trySend(DiscoveryEvent.DeviceFound(mergedDevice))
+                    val deviceKey = getDeviceKey(device)
+                    // Don't merge - treat each service as separate device
+                    discoveredDevices[deviceKey] = device
+                    trySend(DiscoveryEvent.DeviceFound(device))
                     Log.d(TAG, "AirPlay 2 device found: ${device.displayName} at ${device.host}:${device.port}")
                 }
             }
@@ -121,29 +117,19 @@ class AirPlayDiscovery(
             override fun serviceRemoved(event: ServiceEvent) {
                 val device = parseServiceEvent(event, isRaop = true)
                 if (device != null) {
-                    // Only remove if not also an AirPlay 2 device
-                    val existing = discoveredDevices[device.host]
-                    if (existing?.protocolVersion == 1) {
-                        discoveredDevices.remove(device.host)
-                        trySend(DiscoveryEvent.DeviceLost(device))
-                    }
+                    val deviceKey = getDeviceKey(device)
+                    discoveredDevices.remove(deviceKey)
+                    trySend(DiscoveryEvent.DeviceLost(device))
                 }
             }
 
             override fun serviceResolved(event: ServiceEvent) {
                 val device = parseServiceEvent(event, isRaop = true)
                 if (device != null) {
-                    val existingDevice = discoveredDevices[device.host]
-                    if (existingDevice != null) {
-                        // Update existing AirPlay 2 device with RAOP port
-                        val mergedDevice = existingDevice.copy(raopPort = device.port)
-                        discoveredDevices[device.host] = mergedDevice
-                        trySend(DiscoveryEvent.DeviceFound(mergedDevice))
-                    } else {
-                        // New RAOP-only device (AirPlay 1)
-                        discoveredDevices[device.host] = device
-                        trySend(DiscoveryEvent.DeviceFound(device))
-                    }
+                    val deviceKey = getDeviceKey(device)
+                    // Don't merge - treat each service as separate device
+                    discoveredDevices[deviceKey] = device
+                    trySend(DiscoveryEvent.DeviceFound(device))
                     Log.d(TAG, "RAOP device found: ${device.displayName} at ${device.host}:${device.port}")
                 }
             }
@@ -167,6 +153,14 @@ class AirPlayDiscovery(
             multicastLock = null
             discoveredDevices.clear()
         }
+    }
+
+    /**
+     * Generate a unique key for each device based on name, host, and port
+     * This prevents merging devices with the same IP but different services
+     */
+    private fun getDeviceKey(device: AirPlayDevice): String {
+        return "${device.name}:${device.host}:${device.port}"
     }
 
     private fun parseServiceEvent(event: ServiceEvent, isRaop: Boolean): AirPlayDevice? {
