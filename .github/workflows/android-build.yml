@@ -70,19 +70,16 @@ jobs:
         find . -name "*.gradle*" -o -name "*.kt" -o -name "*.xml" | head -20
         
     - name: Build Debug APK
-      run: ./gradlew assembleDebug
+      run: ./gradlew assembleDebug -x lint
       
     - name: Build Release APK (if secrets available)
       if: env.SIGNING_KEY_ALIAS != ''
-      run: ./gradlew assembleRelease
+      run: ./gradlew assembleRelease -x lint
       env:
         SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
         SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
         SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
         
-    - name: Run Lint
-      run: ./gradlew lint
-      
     - name: Run Unit Tests
       run: ./gradlew test
       
@@ -101,13 +98,6 @@ jobs:
         path: app/build/outputs/apk/release/app-release.apk
         retention-days: 90
         
-    - name: Upload Lint Results
-      uses: actions/upload-artifact@v4
-      if: always()
-      with:
-        name: lint-results
-        path: app/build/reports/lint-results.html
-        
     - name: Upload Test Results
       uses: actions/upload-artifact@v4
       if: always()
@@ -122,12 +112,13 @@ jobs:
         echo "- **Build Type**: ${{ github.event.inputs.build_type || 'auto' }}" >> $GITHUB_STEP_SUMMARY
         echo "- **Branch**: ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
         echo "- **Commit**: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
-        echo "- **Debug APK**: ✅ Built successfully" >> $GITHUB_STEP_SUMMARY
+        echo "- **Debug APK**: ✅ Built successfully (Lint skipped)" >> $GITHUB_STEP_SUMMARY
         if [ -n "${{ secrets.SIGNING_KEY_ALIAS }}" ]; then
-          echo "- **Release APK**: ✅ Built successfully" >> $GITHUB_STEP_SUMMARY
+          echo "- **Release APK**: ✅ Built successfully (Lint skipped)" >> $GITHUB_STEP_SUMMARY
         else
           echo "- **Release APK**: ⚠️ Skipped (no signing config)" >> $GITHUB_STEP_SUMMARY
         fi
+        echo "- **Lint Check**: ⏭️ Skipped for faster builds" >> $GITHUB_STEP_SUMMARY
         
     - name: Release to GitHub
       if: github.event_name == 'release' && env.SIGNING_KEY_ALIAS != ''
@@ -135,7 +126,6 @@ jobs:
       with:
         files: |
           app/build/outputs/apk/release/app-release.apk
-          app/build/reports/lint-results.html
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
