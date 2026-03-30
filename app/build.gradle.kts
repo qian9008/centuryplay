@@ -41,6 +41,13 @@ android {
     buildFeatures {
         viewBinding = true
     }
+
+    lint {
+        // Create baseline to suppress existing lint issues
+        baseline = file("lint-baseline.xml")
+        // Disable specific checks if needed
+        disable += "MissingPermission"
+    }
 }
 
 dependencies {

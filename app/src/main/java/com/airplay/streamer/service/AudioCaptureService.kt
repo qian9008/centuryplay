@@ -187,6 +187,12 @@ class AudioCaptureService : Service() {
 
     private fun tryAudioPlaybackCapture(): Boolean {
         return try {
+            // Check if we have the required permission
+            if (checkSelfPermission(RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                LogServer.log("RECORD_AUDIO permission not granted")
+                return false
+            }
+
             val config = AudioPlaybackCaptureConfiguration.Builder(mediaProjection!!)
                 .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
                 .addMatchingUsage(AudioAttributes.USAGE_GAME)
