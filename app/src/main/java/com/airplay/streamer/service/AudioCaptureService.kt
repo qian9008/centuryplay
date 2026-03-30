@@ -7,6 +7,8 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.Manifest
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioManager
@@ -188,7 +190,7 @@ class AudioCaptureService : Service() {
     private fun tryAudioPlaybackCapture(): Boolean {
         return try {
             // Check if we have the required permission
-            if (checkSelfPermission(RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
                 LogServer.log("RECORD_AUDIO permission not granted")
                 return false
             }
