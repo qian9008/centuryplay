@@ -1164,13 +1164,12 @@ private fun parseTransportHeader(transport: String) {
             }
         }
     }
-}
-
-// Audio format and encoding settings
-private var useEncryption = true
-private var useAlacEncoding = true  // Use ALAC instead of L16 for better compatibility
-
-private fun buildSdp(localIp: String, rsaAesKey: String, aesIv: String): String {
+    
+    // Audio format and encoding settings
+    private var useEncryption = true
+    private var useAlacEncoding = true  // Use ALAC instead of L16 for better compatibility
+    
+    private fun buildSdp(localIp: String, rsaAesKey: String, aesIv: String): String {
     val audioFormatLine = if (useAlacEncoding) {
         "a=rtpmap:96 AppleLossless\r\na=fmtp:96 4091/0/0/0/0/0/0/0/0/0/0/44100/2"
     } else {
