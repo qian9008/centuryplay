@@ -218,14 +218,21 @@ class AudioCaptureService : Service() {
                 .build()
 
             if (audioRecord?.state == AudioRecord.STATE_INITIALIZED) {
+                LogServer.log("AudioRecord initialized successfully")
+                LogServer.log("Audio format: ${audioFormat.sampleRate}Hz, ${audioFormat.channelMask}, ${audioFormat.encoding}")
+                LogServer.log("Buffer size: $bufferSize bytes")
+                
                 audioRecord?.startRecording()
+                LogServer.log("AudioRecord started recording")
                 true
             } else {
+                LogServer.log("AudioRecord initialization failed, state: ${audioRecord?.state}")
                 audioRecord?.release()
                 audioRecord = null
                 false
             }
         } catch (e: Exception) {
+            LogServer.log("AudioRecord setup error: ${e.message}")
             e.printStackTrace()
             false
         }
@@ -234,17 +241,35 @@ class AudioCaptureService : Service() {
     private fun startAudioStreamLoop() {
         captureJob = serviceScope.launch(Dispatchers.IO) {
             val buffer = ByteArray(BUFFER_SIZE)
+            var totalBytesRead = 0L
+            var packetCount = 0
 
+            LogServer.log("Audio stream loop started")
+            
             while (isActive && isCapturing) {
                 val bytesRead = audioRecord?.read(buffer, 0, BUFFER_SIZE) ?: -1
 
                 if (bytesRead > 0) {
+                    totalBytesRead += bytesRead
+                    packetCount++
+                    
+                    // Log every 100 packets
+                    if (packetCount % 100 == 0) {
+                        LogServer.log("Audio: sent $packetCount packets, ${totalBytesRead} bytes total")
+                    }
+                    
                     raopClient?.streamAudio(buffer.copyOf(bytesRead))
                 } else if (bytesRead < 0) {
                     // Error reading audio
+                    LogServer.log("Audio read error: $bytesRead")
                     break
+                } else {
+                    // No data available
+                    Thread.sleep(10)
                 }
             }
+            
+            LogServer.log("Audio stream loop ended: $packetCount packets, ${totalBytesRead} bytes total")
         }
     }
 
