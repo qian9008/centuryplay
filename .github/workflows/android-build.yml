@@ -45,7 +45,7 @@ jobs:
         path: |
           ~/.gradle/caches
           ~/.gradle/wrapper
-        key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+        key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}-${{ github.sha }}
         restore-keys: |
           ${{ runner.os }}-gradle-
           
@@ -54,7 +54,7 @@ jobs:
       with:
         path: |
           ~/.android/build-cache
-        key: ${{ runner.os }}-android-build-cache-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+        key: ${{ runner.os }}-android-build-cache-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}-${{ github.sha }}
         restore-keys: |
           ${{ runner.os }}-android-build-cache-
           
