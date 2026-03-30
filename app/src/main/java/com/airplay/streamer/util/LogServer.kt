@@ -134,7 +134,7 @@ object LogServer {
 </head>
 <body>
     <h1>🔊 centuryplay logs (manual refresh)</h1>
-    <pre>$logContent</pre>
+    <pre>${logContent}</pre>
 </body>
 </html>
         """.trimIndent()
