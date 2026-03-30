@@ -768,20 +768,15 @@ class RaopClient(
                         LogServer.log("SND: Pkt $rtpSequence, RMS=$rms (Max 32767), Vol=${Math.round(20 * Math.log10(rms.toDouble()))}dB")
                     }
 
-                    // Encode or convert audio data
-                    val encodedData = if (useAlacEncoding) {
-                        // Use ALAC encoder for better compatibility
-                        alacEncoder.encode(chunk)
-                    } else {
-                        // L16 format: convert PCM from little-endian to big-endian
-                        swapEndianness(chunk)
-                    }
+                    // Convert PCM from little-endian to big-endian (network byte order)
+                    // L16 format (RFC 3551) requires big-endian (network byte order)
+                    val beData = swapEndianness(chunk)
                     
                     // Encrypt audio data with AES-128-CBC (only if encryption is enabled)
                     val payloadData = if (useEncryption) {
-                        encryptAudio(encodedData)
+                        encryptAudio(beData)
                     } else {
-                        encodedData  // Send unencrypted for testing
+                        beData  // Send unencrypted for testing
                     }
                     
                     // Build RTP packet with payload
@@ -1007,186 +1002,24 @@ class RaopClient(
         }
     }
 
-    
-    // Stop background threads immediately
-    logD("Stopping health monitor...")
-    stopHealthMonitor()
-    
-    logD("Stopping sync sender...")
-    stopSyncSender()
-    
-    logD("Stopping timing responder...")
-    stopTimingResponder()
-    
-    // Give threads a moment to notice the flags
-    try { Thread.sleep(100) } catch (_: Exception) {}
-    
-    // Send TEARDOWN if we were connected (with timeout)
-    if (wasConnected) {
-        try {
-            logD("Sending TEARDOWN request...")
-            rtspSocket?.soTimeout = 2000  // 2 second timeout for teardown
-            val request = buildRtspRequest("TEARDOWN", sessionId = serverSessionId)
-            rtspWriter?.print(request)
-            rtspWriter?.flush()
-            val response = parseRtspResponse()
-            logD("TEARDOWN response: ${response?.first}")
-        } catch (e: Exception) {
-            logD("TEARDOWN failed (expected if connection lost): ${e.message}")
-        }
-    }
-    
-    // Close RTSP connection
-    logD("Closing RTSP socket...")
-    try {
-        rtspWriter?.close()
-    } catch (_: Exception) {}
-    rtspWriter = null
-    
-    try {
-        rtspReader?.close()
-    } catch (_: Exception) {}
-    rtspReader = null
-    
-    try {
-        rtspSocket?.close()
-    } catch (_: Exception) {}
-    rtspSocket = null
-    
-    // Close UDP sockets (this will unblock any blocking receive() calls)
-    logD("Closing UDP sockets...")
-    try {
-        audioSocket?.close()
-    } catch (_: Exception) {}
-    audioSocket = null
-    
-    try {
-        controlSocket?.close()
-    } catch (_: Exception) {}
-    controlSocket = null
-    
-    try {
-        timingSocket?.close()
-    } catch (_: Exception) {}
-    timingSocket = null
-    
-    // Reset state
-    serverPort = 0
-    serverControlPort = 0
-    serverTimingPort = 0
-    serverSessionId = null
-    syncSequence = 0
-    syncStartRtpTimestamp = 0
-    syncStartTimeMs = 0
-    
-    // Clear audio buffer
-    synchronized(audioBuffer) {
-        audioBuffer.reset()
-    }
-    
-    logD("Teardown complete")
-    callback?.onDisconnected()
-}
-
-/**
- * Stop the timing responder thread safely
- */
-private fun stopTimingResponder() {
-    isTimingRunning.set(false)
-    // Socket close will interrupt the blocking receive()
-}
-
-private fun buildRtspRequest(
-    method: String,
-    headers: Map<String, String> = emptyMap(),
-    body: String = "",
-    sessionId: String? = null
-): String {
-    val sb = StringBuilder()
-    // URL format per AirPlay spec: rtsp://host/sessionId (no port in URL)
-    sb.append("$method rtsp://$host/$localSessionId RTSP/1.0\r\n")
-    sb.append("CSeq: ${cSeq.incrementAndGet()}\r\n")
-    sb.append("User-Agent: $USER_AGENT\r\n")
-    sb.append("Client-Instance: $clientInstance\r\n")
-    sb.append("DACP-ID: $dacpId\r\n")
-    sb.append("Active-Remote: $activeRemote\r\n")
-
-    if (sessionId != null) {
-        sb.append("Session: $sessionId\r\n")
-    }
-
-    headers.forEach { (key, value) ->
-        sb.append("$key: $value\r\n")
-    }
-
-    sb.append("\r\n")
-    sb.append(body)
-
-    return sb.toString()
-}
-
-private fun parseRtspResponse(): Pair<Int, Map<String, String>>? {
-    val headers = mutableMapOf<String, String>()
-
-    val statusLine = rtspReader?.readLine() ?: return null
-    val statusCode = statusLine.split(" ").getOrNull(1)?.toIntOrNull() ?: return null
-
-    while (true) {
-        val line = rtspReader?.readLine() ?: break
-        if (line.isEmpty()) break
-
-        val colonIndex = line.indexOf(':')
-        if (colonIndex > 0) {
-            val key = line.substring(0, colonIndex).trim()
-            val value = line.substring(colonIndex + 1).trim()
-            headers[key] = value
-        }
-    }
-
-    return statusCode to headers
-}
-
-private fun parseTransportHeader(transport: String) {
-    transport.split(";").forEach { part ->
-        val trimmedPart = part.trim()
-        when {
-            trimmedPart.startsWith("server_port=") -> {
-                serverPort = trimmedPart.substringAfter("=").toIntOrNull() ?: 0
-                logD("Parsed server_port (audio): $serverPort")
-            }
-            trimmedPart.startsWith("control_port=") -> {
-                serverControlPort = trimmedPart.substringAfter("=").toIntOrNull() ?: 0
-                logD("Parsed control_port (server): $serverControlPort")
-            }
-            trimmedPart.startsWith("timing_port=") -> {
-                serverTimingPort = trimmedPart.substringAfter("=").toIntOrNull() ?: 0
-                logD("Parsed timing_port (server): $serverTimingPort")
-            }
-        }
-    }
-    
-    // Audio format and encoding settings
+    // Encryption is required for proper AirPlay compatibility
+    // When true, audio is encrypted with AES-128-CBC and keys are exchanged via RSA
     private var useEncryption = true
-    private var useAlacEncoding = true  // Use ALAC instead of L16 for better compatibility
+    private var useAlacEncoding = true  // Use ALAC for better compatibility
     
     private fun buildSdp(localIp: String, rsaAesKey: String, aesIv: String): String {
-    val audioFormatLine = if (useAlacEncoding) {
-        "a=rtpmap:96 AppleLossless\r\na=fmtp:96 4091/0/0/0/0/0/0/0/0/0/0/44100/2"
-    } else {
-        "a=rtpmap:96 L16/44100/2"
-    }
-    
-    val baseSdp = """v=0
+        val baseSdp = """
+v=0
 o=iTunes $localSessionId 0 IN IP4 $localIp
 s=iTunes
 c=IN IP4 $host
 t=0 0
 m=audio 0 RTP/AVP 96
-$audioFormatLine"""
-    
-    // Only include encryption parameters if encryption is enabled
-    return if (useEncryption) {
-        """
+a=rtpmap:96 L16/44100/2"""
+        
+        // Only include encryption parameters if encryption is enabled
+        return if (useEncryption) {
+            """
 $baseSdp
 a=rsaaeskey:$rsaAesKey
 a=aesiv:$aesIv
