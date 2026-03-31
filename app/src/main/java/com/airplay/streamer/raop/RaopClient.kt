@@ -352,6 +352,8 @@ class RaopClient(
     private fun setup(): Boolean {
         val localControlPort = controlSocket?.localPort ?: return false
         val localTimingPort = timingSocket?.localPort ?: return false
+        controlPort = localControlPort
+        timingPort = localTimingPort
         
         Log.d(TAG, "SETUP with control_port=$localControlPort, timing_port=$localTimingPort")
 
@@ -387,6 +389,14 @@ class RaopClient(
             if (response != null && response.first == 200) {
                 val transportHeader = response.second["Transport"] ?: return false
                 parseTransportHeader(transportHeader)
+                if (serverControlPort == 0) {
+                    serverControlPort = localControlPort
+                    logD("SETUP fallback: using local control_port as server target: $serverControlPort")
+                }
+                if (serverTimingPort == 0) {
+                    serverTimingPort = localTimingPort
+                    logD("SETUP fallback: using local timing_port as server target: $serverTimingPort")
+                }
             logD("SETUP succeeded via ${variant.label} - serverPort=$serverPort")
 
                 if (audioTransport == "udp") {
