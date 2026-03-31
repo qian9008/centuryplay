@@ -1127,7 +1127,9 @@ class RaopClient(
 
         if (useAlacEncoding) {
             sdpLines.add("a=rtpmap:96 AppleLossless")
-            sdpLines.add("a=fmtp:96 352/0/16/40/10/14/2/255/1415/0/44100")
+            // fmtp 字段用空格分隔（RFC 4566），与 shairport-sync 一致
+            // frameLength compatVer bitDepth riceMult riceInit riceLimit numCh maxRun maxFrameBytes(0=VBR) avgBR sampleRate
+            sdpLines.add("a=fmtp:96 352 0 16 40 10 14 2 255 0 0 44100")
         } else {
             sdpLines.add("a=rtpmap:96 L16/44100/2")
         }
