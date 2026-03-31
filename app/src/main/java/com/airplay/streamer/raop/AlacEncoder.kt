@@ -53,9 +53,9 @@ class AlacEncoder {
         return if (numSamples == FRAMES_PER_PACKET) {
             // Standard size - just 3 bytes header
             byteArrayOf(
-                0x20.toByte(), // Uncompressed, no size field
+                0x20.toByte(), // Uncompressed, tag=1
                 0x00.toByte(),
-                0x00.toByte()
+                0x10.toByte()  // isUncompressed = 1
             )
         } else {
             // Non-standard size - include sample count
@@ -64,7 +64,8 @@ class AlacEncoder {
             
             // Header with hasSize flag
             buffer.put(0x24.toByte())
-            buffer.putShort(0)
+            buffer.put(0x00.toByte())
+            buffer.put(0x10.toByte()) // isUncompressed = 1
             buffer.putInt(numSamples)
             
             buffer.array()
