@@ -99,7 +99,7 @@ class RaopClient(
 
     // Configuration flags
     private var useEncryption = true
-    private var useAlacEncoding = true  // Use ALAC for better compatibility
+    private var useAlacEncoding = false  // Fallback to L16 for receivers that crash on uncompressed ALAC
 
     interface StreamingCallback {
         fun onConnected()
