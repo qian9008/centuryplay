@@ -768,15 +768,20 @@ class RaopClient(
                         LogServer.log("SND: Pkt $rtpSequence, RMS=$rms (Max 32767), Vol=${Math.round(20 * Math.log10(rms.toDouble()))}dB")
                     }
 
-                    // Convert PCM from little-endian to big-endian (network byte order)
-                    // L16 format (RFC 3551) requires big-endian (network byte order)
-                    val beData = swapEndianness(chunk)
+                    // Encode audio data
+                    val encodedData = if (useAlacEncoding) {
+                        alacEncoder.encode(chunk)
+                    } else {
+                        // Fallback: Convert PCM from little-endian to big-endian (network byte order)
+                        // L16 format (RFC 3551) requires big-endian (network byte order)
+                        swapEndianness(chunk)
+                    }
                     
                     // Encrypt audio data with AES-128-CBC (only if encryption is enabled)
                     val payloadData = if (useEncryption) {
-                        encryptAudio(beData)
+                        encryptAudio(encodedData)
                     } else {
-                        beData  // Send unencrypted for testing
+                        encodedData  // Send unencrypted for testing
                     }
                     
                     // Build RTP packet with payload
@@ -1008,26 +1013,30 @@ class RaopClient(
     private var useAlacEncoding = true  // Use ALAC for better compatibility
     
     private fun buildSdp(localIp: String, rsaAesKey: String, aesIv: String): String {
-        val baseSdp = """
-v=0
-o=iTunes $localSessionId 0 IN IP4 $localIp
-s=iTunes
-c=IN IP4 $host
-t=0 0
-m=audio 0 RTP/AVP 96
-a=rtpmap:96 L16/44100/2"""
-        
-        // Only include encryption parameters if encryption is enabled
-        return if (useEncryption) {
-            """
-$baseSdp
-a=rsaaeskey:$rsaAesKey
-a=aesiv:$aesIv
-""".trimIndent().replace("\n", "\r\n")
+        val sdpLines = mutableListOf(
+            "v=0",
+            "o=iTunes $localSessionId 0 IN IP4 $localIp",
+            "s=iTunes",
+            "c=IN IP4 $host",
+            "t=0 0",
+            "m=audio 0 RTP/AVP 96"
+        )
+
+        if (useAlacEncoding) {
+            sdpLines.add("a=rtpmap:96 AppleLossless")
+            sdpLines.add("a=fmtp:96 352 0 16 40 10 14 2 255 0 0 44100")
         } else {
-            logD("ENCRYPTION DISABLED - streaming unencrypted L16 audio")
-            baseSdp.trimIndent().replace("\n", "\r\n")
+            sdpLines.add("a=rtpmap:96 L16/44100/2")
         }
+
+        if (useEncryption) {
+            sdpLines.add("a=rsaaeskey:$rsaAesKey")
+            sdpLines.add("a=aesiv:$aesIv")
+        } else {
+            logD("ENCRYPTION DISABLED - streaming unencrypted ${if (useAlacEncoding) "ALAC" else "L16"} audio")
+        }
+
+        return sdpLines.joinToString("\r\n") + "\r\n"
     }
 
     private fun buildRtpPacket(data: ByteArray): ByteArray {
