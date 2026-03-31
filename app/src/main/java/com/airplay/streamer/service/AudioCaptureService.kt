@@ -198,6 +198,7 @@ class AudioCaptureService : Service() {
             val config = AudioPlaybackCaptureConfiguration.Builder(mediaProjection!!)
                 .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
                 .addMatchingUsage(AudioAttributes.USAGE_GAME)
+                .addMatchingUsage(AudioAttributes.USAGE_UNKNOWN)
                 .build()
 
             val audioFormat = AudioFormat.Builder()

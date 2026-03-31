@@ -33,7 +33,7 @@ class RaopClient(
 ) {
     companion object {
         private const val TAG = "RaopClient"
-        private const val USER_AGENT = "iTunes/12.3 (Windows; N)"
+        private const val USER_AGENT = "iTunes/4.6 (Macintosh; U; PPC Mac OS X 10.3)"
         private const val SAMPLE_RATE = 44100
         private const val CHANNELS = 2
         private const val BITS_PER_SAMPLE = 16
@@ -228,7 +228,8 @@ class RaopClient(
             mapOf(
                 "Content-Type" to "application/sdp",
                 "Content-Length" to sdp.toByteArray().size.toString(),
-                "Apple-Challenge" to challenge
+                "Apple-Challenge" to challenge,
+                "X-Apple-Session-ID" to (serverSessionId ?: generateSessionId())
             ),
             sdp
         )
@@ -1025,7 +1026,7 @@ class RaopClient(
 
         if (useAlacEncoding) {
             sdpLines.add("a=rtpmap:96 AppleLossless")
-            sdpLines.add("a=fmtp:96 352 0 16 40 10 14 2 255 0 0 44100")
+            sdpLines.add("a=fmtp:96 352/0/16/40/10/14/2/1415/0/0/44100")
         } else {
             sdpLines.add("a=rtpmap:96 L16/44100/2")
         }
