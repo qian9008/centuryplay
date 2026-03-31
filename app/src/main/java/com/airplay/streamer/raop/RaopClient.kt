@@ -1005,6 +1005,7 @@ class RaopClient(
     // Encryption is required for proper AirPlay compatibility
     // When true, audio is encrypted with AES-128-CBC and keys are exchanged via RSA
     private var useEncryption = true
+    private var useAlacEncoding = true  // Use ALAC for better compatibility
     
     private fun buildSdp(localIp: String, rsaAesKey: String, aesIv: String): String {
         val baseSdp = """
