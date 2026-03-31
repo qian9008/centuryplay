@@ -162,6 +162,22 @@ class AudioCaptureService : Service() {
             stopCapture(false) // Soft stop: don't release MediaProjection
         }
 
+        // Android 14+: Must have MediaProjection token BEFORE starting FGS of type mediaProjection
+        if (mediaProjection == null) {
+            try {
+                LogServer.log("Requesting new MediaProjection BEFORE foregrounding")
+                val projectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+                mediaProjection = projectionManager.getMediaProjection(resultCode, resultData)
+            } catch (e: Exception) {
+                LogServer.log("CRITICAL: Failed to get MediaProjection - ${e.message}")
+                stopCapture(true)
+                stopSelf()
+                return
+            }
+        } else {
+            LogServer.log("Reusing existing MediaProjection")
+        }
+
         // Start foreground with explicit proper Type for Android 14+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(NOTIFICATION_ID, createNotification(), android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
@@ -173,22 +189,6 @@ class AudioCaptureService : Service() {
 
         connectionJob = serviceScope.launch {
             try {
-                // Reuse MediaProjection if it exists and is still valid
-                if (mediaProjection == null) {
-                    try {
-                        LogServer.log("Requesting new MediaProjection")
-                        val projectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-                        mediaProjection = projectionManager.getMediaProjection(resultCode, resultData)
-                    } catch (e: Exception) {
-                        LogServer.log("CRITICAL: Failed to get MediaProjection - ${e.message}")
-                        stopCapture(true)
-                        stopSelf()
-                        return@launch
-                    }
-                } else {
-                    LogServer.log("Reusing existing MediaProjection")
-                }
-
                 if (mediaProjection == null || !serviceScope.isActive) {
                     LogServer.log("MediaProjection is null or job cancelled")
                     stopSelf()
