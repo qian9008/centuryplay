@@ -164,12 +164,19 @@ class AudioCaptureService : Service() {
 
         connectionJob = serviceScope.launch {
             try {
-                // Get MediaProjection
-                val projectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) 
-                    as MediaProjectionManager
-                mediaProjection = projectionManager.getMediaProjection(resultCode, resultData)
+                // Get MediaProjection - wrap in try-catch as this can throw IllegalStateException on some devices if reused too quickly
+                try {
+                    val projectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+                    mediaProjection = projectionManager.getMediaProjection(resultCode, resultData)
+                } catch (e: Exception) {
+                    LogServer.log("CRITICAL: Failed to get MediaProjection - ${e.message}")
+                    stopCapture()
+                    stopSelf()
+                    return@launch
+                }
 
-                if (mediaProjection == null) {
+                if (mediaProjection == null || !serviceScope.isActive) {
+                    LogServer.log("MediaProjection is null or job cancelled")
                     stopSelf()
                     return@launch
                 }
@@ -181,14 +188,16 @@ class AudioCaptureService : Service() {
                     codecCapabilities = codecCapabilities,
                     encryptionCapabilities = encryptionCapabilities
                 )
-                if (!connected) return@launch
+                if (!connected || !serviceScope.isActive) return@launch
 
                 // Try AudioPlaybackCapture
                 val captureStarted = tryAudioPlaybackCapture()
 
                 if (captureStarted) {
                     isCapturing = true
-                    onStateChanged?.invoke(true)
+                    android.os.Handler(android.os.Looper.getMainLooper()).post {
+                        onStateChanged?.invoke(true)
+                    }
                     LogServer.log("Audio capture started, beginning stream loop")
                     startAudioStreamLoop()
                 } else {
@@ -325,7 +334,9 @@ class AudioCaptureService : Service() {
                 val captureStarted = tryAudioPlaybackCapture()
                 if (captureStarted) {
                     isCapturing = true
-                    onStateChanged?.invoke(true)
+                    android.os.Handler(android.os.Looper.getMainLooper()).post {
+                        onStateChanged?.invoke(true)
+                    }
                     LogServer.log("Audio capture restarted after compatibility fallback")
                     startAudioStreamLoop()
                 } else {
@@ -451,17 +462,24 @@ class AudioCaptureService : Service() {
     }
 
     private fun stopCapture() {
-        if (!isCapturing && raopClient == null) return // Already stopped
+        // Set flag first to stop all loops immediately
+        isCapturing = false
+        
+        // Notify UI on main thread
+        android.os.Handler(android.os.Looper.getMainLooper()).post {
+            onStateChanged?.invoke(false)
+        }
+        
+        if (raopClient == null && audioRecord == null) return // Already cleaning/cleaned
         
         LogServer.log("stopCapture() called - cleaning up")
         
         // Pause media playback so audio doesn't continue on phone speaker
         pauseMediaPlayback()
         
-        // Set flag first to stop loops
-        isCapturing = false
-        
-        // Cancel the capture job
+        // Cancel all pending jobs immediately
+        connectionJob?.cancel()
+        connectionJob = null
         captureJob?.cancel()
         captureJob = null
 
@@ -482,13 +500,14 @@ class AudioCaptureService : Service() {
         // IMPORTANT: Clear callback first to prevent recursion (disconnect triggers callback -> triggers stopCapture)
         raopClient?.callback = null
         
+        val clientToDisconnect = raopClient
+        raopClient = null
+        
         serviceScope.launch(Dispatchers.IO) {
             try {
-                raopClient?.disconnect()
+                clientToDisconnect?.disconnect()
             } catch (e: Exception) {
                 LogServer.log("Error disconnecting RAOP client: ${e.message}")
-            } finally {
-                raopClient = null
             }
         }
 
@@ -501,9 +520,6 @@ class AudioCaptureService : Service() {
         }
         mediaProjection = null
 
-        // Notify UI
-        onStateChanged?.invoke(false)
-        
         // Remove foreground notification
         stopForeground(STOP_FOREGROUND_REMOVE)
         
