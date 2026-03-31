@@ -879,8 +879,6 @@ class RaopClient(
         serverTimingPort = 0
         serverSessionId = null
         syncSequence = 0
-        syncStartRtpTimestamp = 0
-        syncStartTimeMs = 0
         
         // Clear audio buffer
         synchronized(audioBuffer) {
