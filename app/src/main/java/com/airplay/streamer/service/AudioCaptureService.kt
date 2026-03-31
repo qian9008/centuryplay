@@ -380,29 +380,42 @@ class AudioCaptureService : Service() {
     ): List<RaopCompatibilityMode> {
         val codecSet = codecCapabilities?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() }?.toSet() ?: emptySet()
         val encryptionSet = encryptionCapabilities?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() }?.toSet() ?: emptySet()
-        val supportsL16 = codecSet.isEmpty() || codecSet.contains("0")
+
+        // cn=0 → L16/PCM, cn=1 → ALAC. 若 codecSet 为空则两者均视为支持。
+        val supportsL16   = codecSet.isEmpty() || codecSet.contains("0")
+        val supportsAlac  = codecSet.isEmpty() || codecSet.contains("1")
+
+        // et=0 → plain, et=1 → RSA/AES (classic RAOP)
         val supportsClassicRaopEncryption = encryptionSet.isEmpty() || encryptionSet.contains("1")
         val supportsPlain = encryptionSet.isEmpty() || encryptionSet.contains("0")
 
-        val candidates = buildList {
-            if (supportsPlain && !supportsClassicRaopEncryption) {
-                add(RaopCompatibilityMode("L16 + plain", useAlac = false, useEncryption = false, rsaPadding = "OAEP"))
+        val candidates = buildList<RaopCompatibilityMode> {
+            // ── ALAC 优先（Apple 设备原生格式）──────────────────────────────
+            if (supportsAlac) {
+                if (supportsPlain) {
+                    add(RaopCompatibilityMode("ALAC + plain", useAlac = true, useEncryption = false, rsaPadding = "OAEP"))
+                }
+                if (supportsClassicRaopEncryption) {
+                    add(RaopCompatibilityMode("ALAC + PKCS1 + AES", useAlac = true, useEncryption = true, rsaPadding = "PKCS1"))
+                    add(RaopCompatibilityMode("ALAC + OAEP + AES",  useAlac = true, useEncryption = true, rsaPadding = "OAEP"))
+                }
             }
-            if (supportsClassicRaopEncryption) {
-                add(RaopCompatibilityMode("L16 + PKCS1 + AES", useAlac = false, useEncryption = true, rsaPadding = "PKCS1"))
-                add(RaopCompatibilityMode("L16 + OAEP + AES", useAlac = false, useEncryption = true, rsaPadding = "OAEP"))
-            }
-            if (supportsPlain && supportsClassicRaopEncryption) {
-                add(RaopCompatibilityMode("L16 + plain", useAlac = false, useEncryption = false, rsaPadding = "OAEP"))
+            // ── L16 兜底 ───────────────────────────────────────────────────
+            if (supportsL16) {
+                if (supportsPlain) {
+                    add(RaopCompatibilityMode("L16 + plain", useAlac = false, useEncryption = false, rsaPadding = "OAEP"))
+                }
+                if (supportsClassicRaopEncryption) {
+                    add(RaopCompatibilityMode("L16 + PKCS1 + AES", useAlac = false, useEncryption = true, rsaPadding = "PKCS1"))
+                    add(RaopCompatibilityMode("L16 + OAEP + AES",  useAlac = false, useEncryption = true, rsaPadding = "OAEP"))
+                }
             }
         }
 
-        return candidates.filter { mode ->
-            val codecOk = supportsL16 && !mode.useAlac
-            val encryptionOk = if (mode.useEncryption) supportsClassicRaopEncryption else supportsPlain
-            codecOk && encryptionOk
-        }.ifEmpty {
-            listOf(RaopCompatibilityMode("L16 + plain", useAlac = false, useEncryption = false, rsaPadding = "OAEP"))
+        // 若设备上报了具体能力集但全部被过滤（理论上不应发生），用 ALAC+plain 兜底
+        return candidates.ifEmpty {
+            LogServer.log("buildCompatibilityModes: no matching modes, falling back to ALAC+plain")
+            listOf(RaopCompatibilityMode("ALAC + plain", useAlac = true, useEncryption = false, rsaPadding = "OAEP"))
         }
     }
 

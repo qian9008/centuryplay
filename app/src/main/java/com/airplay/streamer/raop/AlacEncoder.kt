@@ -41,33 +41,28 @@ class AlacEncoder {
     }
 
     private fun buildAlacHeader(numSamples: Int): ByteArray {
-        // ALAC uncompressed frame header
-        // Bit layout:
-        // [0:2] = 001 (uncompressed)
-        // [3:11] = reserved
-        // [12] = has size flag (1 if not standard size)
-        // [13] = unused high bit
-        // [14:15] = unused
-        // [16:31] = sample count (if has size flag = 1)
+        // ALAC uncompressed frame header (参考 shairport-sync / apple-lossless 规范)
+        // 帧头由若干 bit 字段组成，以 big-endian 位流打包：
+        //   [0]     = 0  (hasTimestamp = false)
+        //   [1]     = 0  (不用)
+        //   [2]     = 1  (uncompressed flag = 1)
+        //   [3]     = 0  (hasSize = 0, 使用 SDP 中声明的标准帧大小 352)
+        //   [4..7]  = 0000 (reserved)
+        //   共 1 字节 = 0b00100000 = 0x20
+        //
+        // 非标准帧大小时需要追加 hasSize=1 + 32-bit 样本数：
+        //   byte0 = 0b00101000 = 0x28 (hasSize=1)
+        //   bytes 1..4 = numSamples (big-endian uint32)
         
         return if (numSamples == FRAMES_PER_PACKET) {
-            // Standard size - just 3 bytes header
-            byteArrayOf(
-                0x20.toByte(), // Uncompressed, tag=1
-                0x00.toByte(),
-                0x10.toByte()  // isUncompressed = 1
-            )
+            // 标准帧大小（352 frames），1 字节帧头，其余全是 PCM 数据
+            byteArrayOf(0x20.toByte())
         } else {
-            // Non-standard size - include sample count
-            val buffer = ByteBuffer.allocate(7)
+            // 非标准帧大小，5 字节帧头
+            val buffer = ByteBuffer.allocate(5)
             buffer.order(ByteOrder.BIG_ENDIAN)
-            
-            // Header with hasSize flag
-            buffer.put(0x24.toByte())
-            buffer.put(0x00.toByte())
-            buffer.put(0x10.toByte()) // isUncompressed = 1
-            buffer.putInt(numSamples)
-            
+            buffer.put(0x28.toByte())     // hasSize=1
+            buffer.putInt(numSamples)     // 样本帧数
             buffer.array()
         }
     }
