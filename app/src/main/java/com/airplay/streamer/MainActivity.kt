@@ -64,6 +64,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+            getSharedPreferences(SettingsActivity.PREFS_NAME, MODE_PRIVATE).edit().putString("last_crash", throwable.stackTraceToString()).commit()
+            defaultHandler?.uncaughtException(thread, throwable)
+        }
+
         // Apply Material You dynamic colors (Android 12+)
         DynamicColors.applyToActivityIfAvailable(this)
         
@@ -71,6 +77,13 @@ class MainActivity : AppCompatActivity() {
         
         // Enable edge-to-edge display
         enableEdgeToEdge()
+
+        val prefs = getSharedPreferences(SettingsActivity.PREFS_NAME, MODE_PRIVATE)
+        val lastCrash = prefs.getString("last_crash", null)
+        if (lastCrash != null) {
+            prefs.edit().remove("last_crash").commit()
+            com.google.android.material.dialog.MaterialAlertDialogBuilder(this).setTitle("Crash Log").setMessage(lastCrash).setPositiveButton("OK", null).show()
+        }
         
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
@@ -168,7 +181,7 @@ class MainActivity : AppCompatActivity() {
             layoutManager = LinearLayoutManager(this@MainActivity)
             adapter = speakerAdapter
             // Enable default animations for entry/exit effects
-            itemAnimator = androidx.recyclerview.widget.DefaultItemAnimator()
+            itemAnimator = null // Disabled to prevent crash on rapid tap
         }
     }
     
@@ -492,3 +505,5 @@ class MainActivity : AppCompatActivity() {
         AudioCaptureService.instance?.onStateChanged = null
     }
 }
+
+
