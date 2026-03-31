@@ -78,6 +78,8 @@ class RaopClient(
     private var isSyncRunning = AtomicBoolean(false)
     // Helper to run connection health monitor
     private var isHealthMonitorRunning = AtomicBoolean(false)
+    // Helper to run RTSP keepalive
+    private var isKeepAliveRunning = AtomicBoolean(false)
     private var syncSequence = 0
     
     private val HEALTH_CHECK_INTERVAL_MS = 3000L  // Check every 3 seconds
@@ -507,7 +509,7 @@ class RaopClient(
             return
         }
         
-        logD("Starting sync sender to $host:$serverControlPort")
+        logD("Starting sync sender to $host:$serverControlPort using local control port $controlPort")
         isSyncRunning.set(true)
         syncSequence = 0
         logD("Sync timing established: rtpTimestamp=$rtpTimestamp, latency=${STREAM_LATENCY_MS}ms")
@@ -591,6 +593,36 @@ class RaopClient(
     private fun stopSyncSender() {
         isSyncRunning.set(false)
     }
+
+    private fun startKeepAlive() {
+        if (isKeepAliveRunning.get()) return
+        isKeepAliveRunning.set(true)
+        Thread {
+            try {
+                while (isKeepAliveRunning.get() && isConnected.get()) {
+                    Thread.sleep(2000)
+                    if (!isKeepAliveRunning.get() || !isConnected.get()) break
+                    val request = buildRtspRequest("OPTIONS")
+                    val response = sendRtspRequest(request)
+                    logD("Keepalive OPTIONS response: code=${response?.first}, headers=${response?.second}")
+                    if (response == null || (response.first != 200 && response.first != 501)) {
+                        logE("Keepalive failed")
+                        handleServerDisconnect()
+                        break
+                    }
+                }
+            } catch (e: Exception) {
+                if (isKeepAliveRunning.get()) {
+                    logE("Keepalive error: ${e.message}")
+                }
+            }
+            logD("Keepalive thread finished")
+        }.start()
+    }
+
+    private fun stopKeepAlive() {
+        isKeepAliveRunning.set(false)
+    }
     
     /**
      * Start connection health monitor
@@ -669,6 +701,7 @@ class RaopClient(
         // Stop all background threads
         stopHealthMonitor()
         stopSyncSender()
+        stopKeepAlive()
         stopTimingResponder()
         
         // Close sockets (don't wait for TEARDOWN since server is gone)
@@ -730,6 +763,8 @@ class RaopClient(
             sendMetadata()
             // Start sending sync packets to tell receiver when to play audio
             startSyncSender()
+            // Keep the RTSP control session active on receivers that close it aggressively.
+            startKeepAlive()
             // Start connection health monitor
             startHealthMonitor()
             return true
@@ -867,6 +902,9 @@ class RaopClient(
         
         logD("Stopping sync sender...")
         stopSyncSender()
+
+        logD("Stopping keepalive...")
+        stopKeepAlive()
         
         logD("Stopping timing responder...")
         stopTimingResponder()
