@@ -90,6 +90,7 @@ class RaopClient(
     private var serverControlPort: Int = 0  // Server's control port for sync packets
     private var serverTimingPort: Int = 0   // Server's timing port
     private var audioTransport: String = "udp"
+    private var tcpAudioPacketCount: Int = 0
     private var controlPort: Int = 0
     private var timingPort: Int = 0
 
@@ -790,7 +791,8 @@ class RaopClient(
 
                     // Send to server
                     if (audioTransport == "tcp") {
-                        audioTcpOutput?.write(rtpPacket)
+                        val framedPacket = buildTcpAudioPacket(rtpPacket)
+                        audioTcpOutput?.write(framedPacket)
                         audioTcpOutput?.flush()
                     } else {
                         val address = InetAddress.getByName(host)
@@ -928,6 +930,7 @@ class RaopClient(
         serverSessionId = null
         syncSequence = 0
         audioTransport = "udp"
+        tcpAudioPacketCount = 0
         
         // Clear audio buffer
         synchronized(audioBuffer) {
@@ -1052,11 +1055,29 @@ class RaopClient(
         try {
             audioTcpSocket?.close()
         } catch (_: Exception) {}
+        tcpAudioPacketCount = 0
         audioTcpSocket = Socket(host, serverPort).apply {
             tcpNoDelay = true
         }
         audioTcpOutput = BufferedOutputStream(audioTcpSocket!!.getOutputStream())
         logD("Opened audio TCP socket to $host:$serverPort")
+    }
+
+    private fun buildTcpAudioPacket(rtpPacket: ByteArray): ByteArray {
+        // Try RTSP interleaved framing on the dedicated TCP audio socket.
+        val framed = ByteArray(rtpPacket.size + 4)
+        framed[0] = '$'.code.toByte()
+        framed[1] = 0x00 // audio channel
+        framed[2] = (rtpPacket.size shr 8).toByte()
+        framed[3] = rtpPacket.size.toByte()
+        System.arraycopy(rtpPacket, 0, framed, 4, rtpPacket.size)
+
+        tcpAudioPacketCount++
+        if (tcpAudioPacketCount <= 3) {
+            val preview = framed.take(12).joinToString(" ") { "%02X".format(it) }
+            logD("TCP audio packet #$tcpAudioPacketCount framed bytes: $preview")
+        }
+        return framed
     }
 
     // SDP payload is chosen from the receiver's advertised RAOP capabilities when available.
