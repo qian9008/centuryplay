@@ -27,20 +27,28 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 
 /**
  * Foreground service that captures system audio using MediaProjection/AudioPlaybackCapture
  * and streams it to an AirPlay speaker via RAOP
  */
 class AudioCaptureService : Service() {
+    private data class RaopCompatibilityMode(
+        val label: String,
+        val useAlac: Boolean,
+        val useEncryption: Boolean,
+        val rsaPadding: String
+    )
+
     companion object {
         private const val TAG = "AudioCaptureService"
         private const val NOTIFICATION_ID = 1
         private const val CHANNEL_ID = "airplay_streaming"
+        private const val EARLY_DISCONNECT_WINDOW_MS = 8000L
 
         private const val SAMPLE_RATE = 44100
         private const val CHANNEL_CONFIG = AudioFormat.CHANNEL_IN_STEREO
@@ -70,9 +78,19 @@ class AudioCaptureService : Service() {
     private var audioRecord: AudioRecord? = null
     private var raopClient: RaopClient? = null
     private var captureJob: Job? = null
+    private var connectionJob: Job? = null
 
     private var isCapturing = false
     private var deviceName: String = "AirPlay Speaker"
+    private var currentModeIndex = 0
+    private var activeMode: RaopCompatibilityMode? = null
+    private var connectedAtMs = 0L
+    private var isSwitchingModes = false
+    private var shouldStayStopped = false
+    private var codecCapabilities: String? = null
+    private var encryptionCapabilities: String? = null
+    private var targetHost: String? = null
+    private var targetPort: Int = 0
 
     // Callback for UI updates
     var onStateChanged: ((Boolean) -> Unit)? = null
@@ -100,8 +118,15 @@ class AudioCaptureService : Service() {
                 val host = intent.getStringExtra(EXTRA_HOST) ?: return START_NOT_STICKY
                 val port = intent.getIntExtra(EXTRA_PORT, 0)
                 deviceName = intent.getStringExtra(EXTRA_DEVICE_NAME) ?: "AirPlay Speaker"
-                val codecCapabilities = intent.getStringExtra(EXTRA_CODEC_CAPABILITIES)
-                val encryptionCapabilities = intent.getStringExtra(EXTRA_ENCRYPTION_CAPABILITIES)
+                codecCapabilities = intent.getStringExtra(EXTRA_CODEC_CAPABILITIES)
+                encryptionCapabilities = intent.getStringExtra(EXTRA_ENCRYPTION_CAPABILITIES)
+                targetHost = host
+                targetPort = port
+                shouldStayStopped = false
+                isSwitchingModes = false
+                currentModeIndex = 0
+                activeMode = null
+                connectedAtMs = 0L
 
                 if (resultData != null) {
                     startCapture(
@@ -115,6 +140,7 @@ class AudioCaptureService : Service() {
                 }
             }
             ACTION_STOP -> {
+                shouldStayStopped = true
                 stopCapture()
                 stopSelf()
             }
@@ -134,8 +160,9 @@ class AudioCaptureService : Service() {
 
         // Start foreground with notification
         startForeground(NOTIFICATION_ID, createNotification())
+        connectionJob?.cancel()
 
-        serviceScope.launch {
+        connectionJob = serviceScope.launch {
             try {
                 // Get MediaProjection
                 val projectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) 
@@ -148,47 +175,13 @@ class AudioCaptureService : Service() {
                 }
 
                 LogServer.log("Protocol force: AirPlay 1 (RAOP)")
-
-                // AirPlay 1 (RAOP) Path
-                LogServer.log("Starting AirPlay 1 (RAOP) connection to $host:$port")
-                raopClient = RaopClient(
+                val connected = connectWithFallback(
                     host = host,
                     port = port,
                     codecCapabilities = codecCapabilities,
                     encryptionCapabilities = encryptionCapabilities
                 )
-                
-                // Set callback to handle server disconnects
-                raopClient?.callback = object : RaopClient.StreamingCallback {
-                    override fun onConnected() {
-                        LogServer.log("RAOP callback: Connected")
-                    }
-                    
-                    override fun onDisconnected() {
-                        LogServer.log("RAOP callback: Server disconnected - stopping service")
-                        // Post to main thread to stop the service
-                        android.os.Handler(android.os.Looper.getMainLooper()).post {
-                            stopCapture()
-                            stopSelf()
-                        }
-                    }
-                    
-                    override fun onError(error: String) {
-                        LogServer.log("RAOP callback: Error - $error")
-                    }
-                }
-                
-                val connected = raopClient?.connect() ?: false
-
-                if (!connected) {
-                    LogServer.log("Failed to connect to RAOP server")
-                    stopCapture()
-                    return@launch
-                }
-
-                LogServer.log("RAOP connection established, setting initial volume")
-                // Set initial volume
-                raopClient?.setVolume(0.8f)
+                if (!connected) return@launch
 
                 // Try AudioPlaybackCapture
                 val captureStarted = tryAudioPlaybackCapture()
@@ -208,6 +201,161 @@ class AudioCaptureService : Service() {
                 stopCapture()
             }
         }
+    }
+
+    private suspend fun connectWithFallback(
+        host: String,
+        port: Int,
+        codecCapabilities: String?,
+        encryptionCapabilities: String?
+    ): Boolean {
+        val modes = buildCompatibilityModes(codecCapabilities, encryptionCapabilities)
+
+        while (!shouldStayStopped && currentModeIndex < modes.size) {
+            val mode = modes[currentModeIndex]
+            activeMode = mode
+            connectedAtMs = 0L
+            LogServer.log("Trying RAOP mode ${currentModeIndex + 1}/${modes.size}: ${mode.label}")
+
+            raopClient?.callback = null
+            try {
+                raopClient?.disconnect()
+            } catch (_: Exception) {}
+            raopClient = RaopClient(
+                host = host,
+                port = port,
+                codecCapabilities = codecCapabilities,
+                encryptionCapabilities = encryptionCapabilities,
+                forceAlacEncoding = mode.useAlac,
+                forceEncryption = mode.useEncryption,
+                rsaPaddingMode = mode.rsaPadding
+            )
+
+            raopClient?.callback = object : RaopClient.StreamingCallback {
+                override fun onConnected() {
+                    connectedAtMs = System.currentTimeMillis()
+                    LogServer.log("RAOP callback: Connected with ${mode.label}")
+                }
+
+                override fun onDisconnected() {
+                    if (connectedAtMs == 0L) {
+                        LogServer.log("RAOP callback: Disconnected before stream start on ${mode.label}")
+                        return
+                    }
+                    LogServer.log("RAOP callback: Server disconnected on ${mode.label}")
+                    handleRaopDisconnect()
+                }
+
+                override fun onError(error: String) {
+                    LogServer.log("RAOP callback: Error on ${mode.label} - $error")
+                }
+            }
+
+            val connected = raopClient?.connect() ?: false
+            if (connected) {
+                LogServer.log("RAOP connection established, setting initial volume")
+                raopClient?.setVolume(0.8f)
+                return true
+            }
+
+            currentModeIndex++
+        }
+
+        LogServer.log("Failed to connect to RAOP server with all compatibility modes")
+        stopCapture()
+        return false
+    }
+
+    private fun handleRaopDisconnect() {
+        if (shouldStayStopped) return
+
+        val uptime = if (connectedAtMs == 0L) Long.MAX_VALUE else System.currentTimeMillis() - connectedAtMs
+        val shouldRetry = uptime in 1 until EARLY_DISCONNECT_WINDOW_MS
+
+        if (shouldRetry) {
+            LogServer.log("Early disconnect after ${uptime}ms on ${activeMode?.label}; switching compatibility mode")
+            switchToNextCompatibilityMode()
+            return
+        }
+
+        LogServer.log("RAOP callback: Server disconnected - stopping service")
+        android.os.Handler(android.os.Looper.getMainLooper()).post {
+            stopCapture()
+            stopSelf()
+        }
+    }
+
+    private fun switchToNextCompatibilityMode() {
+        if (isSwitchingModes || shouldStayStopped) return
+        isSwitchingModes = true
+        currentModeIndex++
+
+        serviceScope.launch(Dispatchers.IO) {
+            try {
+                captureJob?.cancel()
+                captureJob = null
+                isCapturing = false
+
+                try {
+                    audioRecord?.stop()
+                } catch (_: Exception) {}
+                try {
+                    audioRecord?.release()
+                } catch (_: Exception) {}
+                audioRecord = null
+
+                raopClient?.callback = null
+                try {
+                    raopClient?.disconnect()
+                } catch (_: Exception) {}
+                raopClient = null
+
+                delay(300)
+
+                val host = targetHost ?: return@launch
+                val port = targetPort
+                val connected = connectWithFallback(host, port, codecCapabilities, encryptionCapabilities)
+                if (!connected || shouldStayStopped) return@launch
+
+                val captureStarted = tryAudioPlaybackCapture()
+                if (captureStarted) {
+                    isCapturing = true
+                    onStateChanged?.invoke(true)
+                    LogServer.log("Audio capture restarted after compatibility fallback")
+                    startAudioStreamLoop()
+                } else {
+                    LogServer.log("Audio capture restart failed after compatibility fallback")
+                    stopCapture()
+                }
+            } finally {
+                isSwitchingModes = false
+            }
+        }
+    }
+
+    private fun buildCompatibilityModes(
+        codecCapabilities: String?,
+        encryptionCapabilities: String?
+    ): List<RaopCompatibilityMode> {
+        val supportsL16 = codecCapabilities.isNullOrBlank() || codecCapabilities.split(",").map { it.trim() }.contains("0")
+        val supportsAlac = codecCapabilities.isNullOrBlank() || codecCapabilities.split(",").map { it.trim() }.contains("1")
+        val supportsEncrypted = encryptionCapabilities.isNullOrBlank() || encryptionCapabilities.split(",").map { it.trim() }.contains("1")
+        val supportsPlain = encryptionCapabilities.isNullOrBlank() || encryptionCapabilities.split(",").map { it.trim() }.contains("0")
+
+        val candidates = listOf(
+            RaopCompatibilityMode("L16 + PKCS1 + AES", useAlac = false, useEncryption = true, rsaPadding = "PKCS1"),
+            RaopCompatibilityMode("L16 + OAEP + AES", useAlac = false, useEncryption = true, rsaPadding = "OAEP"),
+            RaopCompatibilityMode("ALAC + PKCS1 + AES", useAlac = true, useEncryption = true, rsaPadding = "PKCS1"),
+            RaopCompatibilityMode("ALAC + OAEP + AES", useAlac = true, useEncryption = true, rsaPadding = "OAEP"),
+            RaopCompatibilityMode("L16 + plain", useAlac = false, useEncryption = false, rsaPadding = "OAEP"),
+            RaopCompatibilityMode("ALAC + plain", useAlac = true, useEncryption = false, rsaPadding = "OAEP")
+        )
+
+        return candidates.filter { mode ->
+            val codecOk = if (mode.useAlac) supportsAlac else supportsL16
+            val encryptionOk = if (mode.useEncryption) supportsEncrypted else supportsPlain
+            codecOk && encryptionOk
+        }.ifEmpty { candidates }
     }
 
     private fun tryAudioPlaybackCapture(): Boolean {

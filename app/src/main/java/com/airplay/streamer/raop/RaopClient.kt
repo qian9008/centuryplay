@@ -31,7 +31,10 @@ class RaopClient(
     private val host: String,
     private val port: Int,
     private val codecCapabilities: String? = null,
-    private val encryptionCapabilities: String? = null
+    private val encryptionCapabilities: String? = null,
+    private val forceAlacEncoding: Boolean? = null,
+    private val forceEncryption: Boolean? = null,
+    private val rsaPaddingMode: String? = null
 ) {
     companion object {
         private const val TAG = "RaopClient"
@@ -40,6 +43,8 @@ class RaopClient(
         private const val CHANNELS = 2
         private const val BITS_PER_SAMPLE = 16
         private const val FRAMES_PER_PACKET = 352
+        private const val RSA_PADDING_OAEP = "OAEP"
+        private const val RSA_PADDING_PKCS1 = "PKCS1"
     }
     
     // Client identifiers (as per AirPlay spec)
@@ -101,6 +106,7 @@ class RaopClient(
     // Configuration flags
     private var useEncryption = true
     private var useAlacEncoding = false
+    private var currentRsaPaddingMode = RSA_PADDING_OAEP
 
     interface StreamingCallback {
         fun onConnected()
@@ -318,7 +324,12 @@ class RaopClient(
             val publicKey = factory.generatePublic(spec)
             
             // Most RAOP receivers, including shairport-sync, expect OAEP with SHA-1/MGF1.
-            val cipher = Cipher.getInstance("RSA/ECB/OAEPWithSHA-1AndMGF1Padding")
+            val cipher = Cipher.getInstance(
+                when (currentRsaPaddingMode) {
+                    RSA_PADDING_PKCS1 -> "RSA/ECB/PKCS1Padding"
+                    else -> "RSA/ECB/OAEPWithSHA-1AndMGF1Padding"
+                }
+            )
             cipher.init(Cipher.ENCRYPT_MODE, publicKey)
             
             val encryptedKey = cipher.doFinal(aesKey!!)
@@ -1174,21 +1185,28 @@ class RaopClient(
         val codecSet = parseCapabilityList(codecCapabilities)
         val encryptionSet = parseCapabilityList(encryptionCapabilities)
 
-        useAlacEncoding = when {
+        val detectedAlacEncoding = when {
             codecSet.contains("0") -> false
             codecSet.contains("1") -> true
             else -> false
         }
 
-        useEncryption = when {
+        val detectedEncryption = when {
             encryptionSet.contains("1") -> true
             encryptionSet.contains("0") -> false
             else -> true
         }
 
+        useAlacEncoding = forceAlacEncoding ?: detectedAlacEncoding
+        useEncryption = forceEncryption ?: detectedEncryption
+        currentRsaPaddingMode = when (rsaPaddingMode?.uppercase()) {
+            RSA_PADDING_PKCS1 -> RSA_PADDING_PKCS1
+            else -> RSA_PADDING_OAEP
+        }
+
         logD(
             "Compatibility: cn=${codecCapabilities ?: "<unknown>"} et=${encryptionCapabilities ?: "<unknown>"} " +
-                "=> codec=${if (useAlacEncoding) "ALAC" else "L16"} encryption=${if (useEncryption) "RSA/AES" else "none"}"
+                "=> codec=${if (useAlacEncoding) "ALAC" else "L16"} encryption=${if (useEncryption) "RSA/AES" else "none"} rsa=$currentRsaPaddingMode"
         )
     }
 
