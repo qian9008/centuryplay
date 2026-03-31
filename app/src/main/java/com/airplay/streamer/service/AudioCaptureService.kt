@@ -162,8 +162,13 @@ class AudioCaptureService : Service() {
             stopCapture(false) // Soft stop: don't release MediaProjection
         }
 
-        // Start foreground with notification
-        startForeground(NOTIFICATION_ID, createNotification())
+        // Start foreground with explicit proper Type for Android 14+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(NOTIFICATION_ID, createNotification(), android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
+        } else {
+            startForeground(NOTIFICATION_ID, createNotification())
+        }
+        
         connectionJob?.cancel()
 
         connectionJob = serviceScope.launch {
@@ -313,17 +318,19 @@ class AudioCaptureService : Service() {
 
         serviceScope.launch(Dispatchers.IO) {
             try {
-                captureJob?.cancel()
+                val jobToCancel = captureJob
                 captureJob = null
                 isCapturing = false
+                jobToCancel?.cancel()
+
+                val recordToRelease = audioRecord
+                audioRecord = null
 
                 try {
-                    audioRecord?.stop()
+                    recordToRelease?.stop()
+                    jobToCancel?.join()
+                    recordToRelease?.release()
                 } catch (_: Exception) {}
-                try {
-                    audioRecord?.release()
-                } catch (_: Exception) {}
-                audioRecord = null
 
                 raopClient?.callback = null
                 try {
@@ -428,16 +435,21 @@ class AudioCaptureService : Service() {
         captureJob = serviceScope.launch(Dispatchers.IO) {
             val buffer = ByteArray(BUFFER_SIZE)
             var packetCount = 0
-            while (isActive && isCapturing) {
-                val bytesRead = audioRecord?.read(buffer, 0, BUFFER_SIZE) ?: -1
-                if (bytesRead > 0) {
-                    packetCount++
-                    raopClient?.streamAudio(buffer.copyOf(bytesRead))
-                } else if (bytesRead < 0) {
-                    break
-                } else {
-                    Thread.sleep(10)
+            
+            try {
+                while (isActive && isCapturing) {
+                    val bytesRead = audioRecord?.read(buffer, 0, BUFFER_SIZE) ?: -1
+                    if (bytesRead > 0) {
+                        packetCount++
+                        raopClient?.streamAudio(buffer.copyOf(bytesRead))
+                    } else if (bytesRead < 0) {
+                        break
+                    } else {
+                        Thread.sleep(10)
+                    }
                 }
+            } catch (e: Exception) {
+                LogServer.log("Audio stream loop error: ${e.message}")
             }
         }
     }
@@ -454,19 +466,29 @@ class AudioCaptureService : Service() {
         pauseMediaPlayback()
         connectionJob?.cancel()
         connectionJob = null
+        
+        val jobToJoin = captureJob
         captureJob?.cancel()
         captureJob = null
 
-        try {
-            audioRecord?.stop()
-            audioRecord?.release()
-        } catch (_: Exception) {}
+        val recordToRelease = audioRecord
         audioRecord = null
 
         raopClient?.callback = null
         val clientToDisconnect = raopClient
         raopClient = null
+
         serviceScope.launch(Dispatchers.IO) {
+            try {
+                // VERY IMPORTANT to prevent native crash: wait for thread to unblock before calling release
+                recordToRelease?.stop()
+                jobToJoin?.join()
+                recordToRelease?.release()
+                LogServer.log("AudioRecord released gracefully")
+            } catch (e: Exception) {
+                LogServer.log("Error tearing down AudioRecord: ${e.message}")
+            }
+            
             try { clientToDisconnect?.disconnect() } catch (_: Exception) {}
         }
 
