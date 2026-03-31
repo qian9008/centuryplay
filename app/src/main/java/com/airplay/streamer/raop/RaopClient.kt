@@ -468,15 +468,7 @@ class RaopClient(
         logD("Starting sync sender to $host:$serverControlPort")
         isSyncRunning.set(true)
         syncSequence = 0
-        
-        // Record the starting point: this RTP timestamp corresponds to this NTP time + latency
-        // Latency of ~2.5 seconds (110250 samples) gives the receiver time to buffer
-        val latencyMs = 2500L
-        val latencySamples = (latencyMs * SAMPLE_RATE / 1000)
-        syncStartRtpTimestamp = rtpTimestamp
-        syncStartTimeMs = System.currentTimeMillis()
-        
-        logD("Sync timing established: rtpTimestamp=$syncStartRtpTimestamp at time=$syncStartTimeMs, latency=${latencyMs}ms")
+        logD("Sync timing established: rtpTimestamp=$rtpTimestamp, latency=${STREAM_LATENCY_MS}ms")
         
         Thread {
             try {
@@ -488,25 +480,15 @@ class RaopClient(
                     
                     // Send sync packet every 300ms
                     if (now - lastSyncTime >= 300) {
-                        // Calculate what RTP timestamp corresponds to NOW + latency
-                        // elapsed = time since we started
-                        val elapsedMs = now - syncStartTimeMs
-                        // The RTP timestamp that should play at (now + latency) is:
-                        // startRtp + elapsed_samples
-                        val elapsedSamples = (elapsedMs * SAMPLE_RATE / 1000)
-                        val currentPlayRtp = syncStartRtpTimestamp + elapsedSamples
-                        
-                        // The NTP time for this RTP timestamp is: now + latency
-                        val playTimeMs = now + latencyMs
-                        
-                        // Build sync packet
-                        val syncPacket = buildSyncPacket(currentPlayRtp, playTimeMs, latencySamples)
+                        val currentRtp = rtpTimestamp
+                        val playTimeMs = now + STREAM_LATENCY_MS
+                        val syncPacket = buildSyncPacket(currentRtp, playTimeMs)
                         val packet = DatagramPacket(syncPacket, syncPacket.size, address, serverControlPort)
                         socket.send(packet)
                         
                         syncSequence++
                         if (syncSequence <= 5 || syncSequence % 20 == 0) {
-                            logD("Sync #$syncSequence: playRtp=$currentPlayRtp, playTime=$playTimeMs, currentRtp=$rtpTimestamp")
+                            logD("Sync #$syncSequence: currentRtp=$currentRtp playAt=${currentRtp + STREAM_LATENCY_SAMPLES} playTime=$playTimeMs")
                         }
                         lastSyncTime = now
                     }
@@ -522,10 +504,6 @@ class RaopClient(
         }.start()
     }
     
-    // Sync timing variables
-    private var syncStartRtpTimestamp: Long = 0
-    private var syncStartTimeMs: Long = 0
-    
     /**
      * Build an AirPlay sync/control packet
      * Format (20 bytes):
@@ -536,7 +514,7 @@ class RaopClient(
      * - bytes 8-15: NTP timestamp when the RTP audio should play (64-bit big-endian)
      * - bytes 16-19: RTP timestamp + latency for next sync point (big-endian)
      */
-    private fun buildSyncPacket(playRtp: Long, playTimeMs: Long, latencySamples: Long): ByteArray {
+    private fun buildSyncPacket(currentRtp: Long, playTimeMs: Long): ByteArray {
         val packet = ByteArray(20)
         
         // Header: version 2, with extension bit for first packet
@@ -547,19 +525,19 @@ class RaopClient(
         packet[2] = (syncSequence shr 8).toByte()
         packet[3] = syncSequence.toByte()
         
-        // RTP timestamp that should play at the NTP time below (big-endian)
-        packet[4] = (playRtp shr 24).toByte()
-        packet[5] = (playRtp shr 16).toByte()
-        packet[6] = (playRtp shr 8).toByte()
-        packet[7] = playRtp.toByte()
+        // Current RTP position in the sender timeline.
+        packet[4] = (currentRtp shr 24).toByte()
+        packet[5] = (currentRtp shr 16).toByte()
+        packet[6] = (currentRtp shr 8).toByte()
+        packet[7] = currentRtp.toByte()
         
-        // NTP timestamp when playRtp should be played (64-bit big-endian)
+        // NTP timestamp when the receiver should render the future play point.
         val ntpSec = (playTimeMs / 1000) + 2208988800L
         val ntpFrac = ((playTimeMs % 1000) * 4294967296.0 / 1000.0).toLong()
         writeNtpTimestamp(packet, 8, ntpSec, ntpFrac)
         
-        // Next RTP timestamp (play point + latency)
-        val nextRtp = playRtp + latencySamples
+        // Future RTP play point with the standard AirPlay buffer latency applied.
+        val nextRtp = currentRtp + STREAM_LATENCY_SAMPLES
         packet[16] = (nextRtp shr 24).toByte()
         packet[17] = (nextRtp shr 16).toByte()
         packet[18] = (nextRtp shr 8).toByte()
@@ -752,7 +730,8 @@ class RaopClient(
                              sum += sample.toDouble() * sample.toDouble()
                         }
                         val rms = Math.sqrt(sum / samples).toInt()
-                        LogServer.log("SND: Pkt $rtpSequence, RMS=$rms (Max 32767), Vol=${Math.round(20 * Math.log10(rms.toDouble()))}dB")
+                        val db = if (rms > 0) Math.round(20 * Math.log10(rms.toDouble())) else Long.MIN_VALUE
+                        LogServer.log("SND: Pkt $rtpSequence, RMS=$rms (Max 32767), Vol=${if (db == Long.MIN_VALUE) "-inf" else "${db}dB"}")
                     }
 
                     // Encode audio data
@@ -1035,7 +1014,7 @@ class RaopClient(
             sdpLines.add("a=rtpmap:96 L16/44100/2")
         }
 
-        sdpLines.add("a=latency:11025")
+        sdpLines.add("a=latency:$STREAM_LATENCY_SAMPLES")
 
         if (useEncryption && rsaAesKey != null && aesIv != null) {
             sdpLines.add("a=rsaaeskey:$rsaAesKey")
