@@ -56,6 +56,7 @@ class RaopClient(
     private var rtspSocket: Socket? = null
     private var rtspReader: BufferedReader? = null
     private var rtspWriter: PrintWriter? = null
+    private val rtspRequestLock = Any()
     private var audioSocket: DatagramSocket? = null
     private var controlSocket: DatagramSocket? = null
     private var timingSocket: DatagramSocket? = null
@@ -196,10 +197,7 @@ class RaopClient(
         val request = sb.toString()
         Log.d(TAG, "OPTIONS request:\n$request")
 
-        rtspWriter?.print(request)
-        rtspWriter?.flush()
-
-        val response = parseRtspResponse()
+        val response = sendRtspRequest(request)
         Log.d(TAG, "OPTIONS response: code=${response?.first}, headers=${response?.second}")
         // Some servers return 200, some return 501 (not implemented) but still work
         return response != null && (response.first == 200 || response.first == 501)
@@ -250,10 +248,7 @@ class RaopClient(
         )
         logD("ANNOUNCE request:\n$request")
 
-        rtspWriter?.print(request)
-        rtspWriter?.flush()
-
-        val response = parseRtspResponse()
+        val response = sendRtspRequest(request)
         logD("ANNOUNCE response: code=${response?.first}, headers=${response?.second}")
         return response?.first == 200
     }
@@ -280,10 +275,7 @@ class RaopClient(
             logD("Diagnostic OPTIONS request:\n$request")
 
 
-            rtspWriter?.print(request)
-            rtspWriter?.flush()
-
-            val response = parseRtspResponse()
+            val response = sendRtspRequest(request)
             logD("Diagnostic OPTIONS response: code=${response?.first}")
             response?.second?.forEach { (key, value) ->
                 logD("Header: $key = $value")
@@ -361,10 +353,7 @@ class RaopClient(
         )
         logD("SETUP request:\n$request")
 
-        rtspWriter?.print(request)
-        rtspWriter?.flush()
-
-        val response = parseRtspResponse()
+        val response = sendRtspRequest(request)
         logD("SETUP response: code=${response?.first}")
         
         if (response != null && response.first == 200) {
@@ -615,35 +604,18 @@ class RaopClient(
                     
                     logD("Health check: socket alive")
                     
-                    // The most reliable way to detect if the server closed the connection
-                    // is to actually try to read from the socket with a short timeout
-                    // If server closed, read() returns -1 (EOF) or throws an exception
                     try {
-                        currentSocket.soTimeout = 100  // Very short timeout
-                        val inputStream = currentSocket.getInputStream()
-                        
-                        // Actually try to read - this is the key difference
-                        // read() will return -1 if the server has closed the connection
-                        val result = inputStream.read()
-                        if (result == -1) {
-                            logE("Health check: Server closed connection (EOF received)")
+                        currentSocket.sendUrgentData(0xFF)
+                        if (currentSocket.isInputShutdown || currentSocket.isOutputShutdown) {
+                            logE("Health check: RTSP socket input/output is shutdown")
                             handleServerDisconnect()
                             break
-                        } else {
-                            // We got unexpected data from the server
-                            // This is fine, might be an async notification
-                            logD("Health check: Received data from server: $result")
                         }
-                    } catch (e: java.net.SocketTimeoutException) {
-                        // Timeout is expected and fine - means socket is still alive but no data
-                        logD("Health check: socket OK (timeout, no data)")
+                        logD("Health check: socket OK")
                     } catch (e: java.io.IOException) {
-                        logE("Health check: socket read failed - ${e.message}")
+                        logE("Health check: RTSP socket probe failed - ${e.message}")
                         handleServerDisconnect()
                         break
-                    } finally {
-                        // Restore original timeout
-                        try { currentSocket.soTimeout = 10000 } catch (_: Exception) {}
                     }
                 }
             } catch (e: Exception) {
@@ -727,10 +699,7 @@ class RaopClient(
         )
         logD("RECORD request (Check for Content-Length):\n$request")
 
-        rtspWriter?.print(request)
-        rtspWriter?.flush()
-
-        val response = parseRtspResponse()
+        val response = sendRtspRequest(request)
         logD("RECORD response: code=${response?.first}")
         
         if (response?.first == 200) {
@@ -849,10 +818,7 @@ class RaopClient(
             sessionId = serverSessionId
         )
 
-        rtspWriter?.print(request)
-        rtspWriter?.flush()
-
-        parseRtspResponse()?.first == 200
+        sendRtspRequest(request)?.first == 200
     }
 
     /**
@@ -885,9 +851,7 @@ class RaopClient(
                 logD("Sending TEARDOWN request...")
                 rtspSocket?.soTimeout = 2000  // 2 second timeout for teardown
                 val request = buildRtspRequest("TEARDOWN", sessionId = serverSessionId)
-                rtspWriter?.print(request)
-                rtspWriter?.flush()
-                val response = parseRtspResponse()
+                val response = sendRtspRequest(request)
                 logD("TEARDOWN response: ${response?.first}")
             } catch (e: Exception) {
                 logD("TEARDOWN failed (expected if connection lost): ${e.message}")
@@ -998,9 +962,7 @@ class RaopClient(
             metadata,
             sessionId = serverSessionId
         )
-        rtspWriter?.print(request)
-        rtspWriter?.flush()
-        return parseRtspResponse()?.first == 200
+        return sendRtspRequest(request)?.first == 200
     }
 
     private fun parseRtspResponse(): Pair<Int, Map<String, String>>? {
@@ -1022,6 +984,14 @@ class RaopClient(
         }
 
         return statusCode to headers
+    }
+
+    private fun sendRtspRequest(request: String): Pair<Int, Map<String, String>>? {
+        synchronized(rtspRequestLock) {
+            rtspWriter?.print(request)
+            rtspWriter?.flush()
+            return parseRtspResponse()
+        }
     }
 
     private fun parseTransportHeader(transport: String) {

@@ -211,11 +211,14 @@ class AudioCaptureService : Service() {
     ): Boolean {
         val modes = buildCompatibilityModes(codecCapabilities, encryptionCapabilities)
 
-        while (!shouldStayStopped && currentModeIndex < modes.size) {
+        while (serviceScope.isActive && !shouldStayStopped && currentModeIndex < modes.size) {
             val mode = modes[currentModeIndex]
             activeMode = mode
             connectedAtMs = 0L
             LogServer.log("Trying RAOP mode ${currentModeIndex + 1}/${modes.size}: ${mode.label}")
+
+            // Crucial: check for cancellation before each attempt
+            kotlinx.coroutines.yield()
 
             raopClient?.callback = null
             try {
@@ -312,6 +315,8 @@ class AudioCaptureService : Service() {
 
                 delay(300)
 
+                if (!serviceScope.isActive || shouldStayStopped) return@launch
+                
                 val host = targetHost ?: return@launch
                 val port = targetPort
                 val connected = connectWithFallback(host, port, codecCapabilities, encryptionCapabilities)
