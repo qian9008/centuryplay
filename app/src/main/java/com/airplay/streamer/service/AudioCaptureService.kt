@@ -102,7 +102,7 @@ class AudioCaptureService : Service() {
     }
 
     override fun onDestroy() {
-        stopCapture()
+        stopCapture(true) // Full stop on destroy
         serviceScope.cancel()
         instance = null
         super.onDestroy()
@@ -141,7 +141,7 @@ class AudioCaptureService : Service() {
             }
             ACTION_STOP -> {
                 shouldStayStopped = true
-                stopCapture()
+                stopCapture(true)
                 stopSelf()
             }
         }
@@ -156,7 +156,11 @@ class AudioCaptureService : Service() {
         codecCapabilities: String?,
         encryptionCapabilities: String?
     ) {
-        if (isCapturing) return
+        // If we are already capturing, stop the protocol part but keep MediaProjection alive if possible
+        if (isCapturing || connectionJob?.isActive == true) {
+            LogServer.log("Switching target - performing soft reset")
+            stopCapture(false) // Soft stop: don't release MediaProjection
+        }
 
         // Start foreground with notification
         startForeground(NOTIFICATION_ID, createNotification())
@@ -164,15 +168,20 @@ class AudioCaptureService : Service() {
 
         connectionJob = serviceScope.launch {
             try {
-                // Get MediaProjection - wrap in try-catch as this can throw IllegalStateException on some devices if reused too quickly
-                try {
-                    val projectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-                    mediaProjection = projectionManager.getMediaProjection(resultCode, resultData)
-                } catch (e: Exception) {
-                    LogServer.log("CRITICAL: Failed to get MediaProjection - ${e.message}")
-                    stopCapture()
-                    stopSelf()
-                    return@launch
+                // Reuse MediaProjection if it exists and is still valid
+                if (mediaProjection == null) {
+                    try {
+                        LogServer.log("Requesting new MediaProjection")
+                        val projectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+                        mediaProjection = projectionManager.getMediaProjection(resultCode, resultData)
+                    } catch (e: Exception) {
+                        LogServer.log("CRITICAL: Failed to get MediaProjection - ${e.message}")
+                        stopCapture(true)
+                        stopSelf()
+                        return@launch
+                    }
+                } else {
+                    LogServer.log("Reusing existing MediaProjection")
                 }
 
                 if (mediaProjection == null || !serviceScope.isActive) {
@@ -202,12 +211,12 @@ class AudioCaptureService : Service() {
                     startAudioStreamLoop()
                 } else {
                     LogServer.log("Audio capture failed (possibly DRM blocked)")
-                    stopCapture()
+                    stopCapture(true)
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
                 LogServer.log("Streaming/Pairing Error: ${e.message}")
-                stopCapture()
+                stopCapture(true)
             }
         }
     }
@@ -226,13 +235,13 @@ class AudioCaptureService : Service() {
             connectedAtMs = 0L
             LogServer.log("Trying RAOP mode ${currentModeIndex + 1}/${modes.size}: ${mode.label}")
 
-            // Crucial: check for cancellation before each attempt
             kotlinx.coroutines.yield()
 
             raopClient?.callback = null
             try {
                 raopClient?.disconnect()
             } catch (_: Exception) {}
+            
             raopClient = RaopClient(
                 host = host,
                 port = port,
@@ -274,7 +283,7 @@ class AudioCaptureService : Service() {
         }
 
         LogServer.log("Failed to connect to RAOP server with all compatibility modes")
-        stopCapture()
+        stopCapture(true)
         return false
     }
 
@@ -292,7 +301,7 @@ class AudioCaptureService : Service() {
 
         LogServer.log("RAOP callback: Server disconnected - stopping service")
         android.os.Handler(android.os.Looper.getMainLooper()).post {
-            stopCapture()
+            stopCapture(true)
             stopSelf()
         }
     }
@@ -341,7 +350,7 @@ class AudioCaptureService : Service() {
                     startAudioStreamLoop()
                 } else {
                     LogServer.log("Audio capture restart failed after compatibility fallback")
-                    stopCapture()
+                    stopCapture(true)
                 }
             } finally {
                 isSwitchingModes = false
@@ -354,35 +363,29 @@ class AudioCaptureService : Service() {
         encryptionCapabilities: String?
     ): List<RaopCompatibilityMode> {
         val supportsL16 = codecCapabilities.isNullOrBlank() || codecCapabilities.split(",").map { it.trim() }.contains("0")
-        val supportsAlac = codecCapabilities.isNullOrBlank() || codecCapabilities.split(",").map { it.trim() }.contains("1")
         val supportsEncrypted = encryptionCapabilities.isNullOrBlank() || encryptionCapabilities.split(",").map { it.trim() }.contains("1")
-        val supportsPlain = encryptionCapabilities.isNullOrBlank() || encryptionCapabilities.split(",").map { it.trim() }.contains("0")
 
         val candidates = listOf(
             RaopCompatibilityMode("L16 + PKCS1 + AES", useAlac = false, useEncryption = true, rsaPadding = "PKCS1"),
-            RaopCompatibilityMode("L16 + OAEP + AES", useAlac = false, useEncryption = true, rsaPadding = "OAEP"),
-            RaopCompatibilityMode("ALAC + PKCS1 + AES", useAlac = true, useEncryption = true, rsaPadding = "PKCS1"),
-            RaopCompatibilityMode("ALAC + OAEP + AES", useAlac = true, useEncryption = true, rsaPadding = "OAEP"),
-            RaopCompatibilityMode("L16 + plain", useAlac = false, useEncryption = false, rsaPadding = "OAEP"),
-            RaopCompatibilityMode("ALAC + plain", useAlac = true, useEncryption = false, rsaPadding = "OAEP")
+            RaopCompatibilityMode("L16 + OAEP + AES", useAlac = false, useEncryption = true, rsaPadding = "OAEP")
         )
 
         return candidates.filter { mode ->
-            val codecOk = if (mode.useAlac) supportsAlac else supportsL16
-            val encryptionOk = if (mode.useEncryption) supportsEncrypted else supportsPlain
+            val codecOk = supportsL16 && !mode.useAlac
+            val encryptionOk = supportsEncrypted && mode.useEncryption
             codecOk && encryptionOk
         }.ifEmpty { candidates }
     }
 
     private fun tryAudioPlaybackCapture(): Boolean {
         return try {
-            // Check if we have the required permission
             if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
                 LogServer.log("RECORD_AUDIO permission not granted")
                 return false
             }
 
-            val config = AudioPlaybackCaptureConfiguration.Builder(mediaProjection!!)
+            val currentProjection = mediaProjection ?: return false
+            val config = AudioPlaybackCaptureConfiguration.Builder(currentProjection)
                 .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
                 .addMatchingUsage(AudioAttributes.USAGE_GAME)
                 .addMatchingUsage(AudioAttributes.USAGE_UNKNOWN)
@@ -406,22 +409,17 @@ class AudioCaptureService : Service() {
                 .build()
 
             if (audioRecord?.state == AudioRecord.STATE_INITIALIZED) {
-                LogServer.log("AudioRecord initialized successfully")
-                LogServer.log("Audio format: ${audioFormat.sampleRate}Hz, ${audioFormat.channelMask}, ${audioFormat.encoding}")
-                LogServer.log("Buffer size: $bufferSize bytes")
-                
                 audioRecord?.startRecording()
-                LogServer.log("AudioRecord started recording")
+                LogServer.log("AudioRecord started recording (Project reused: ${mediaProjection != null})")
                 true
             } else {
-                LogServer.log("AudioRecord initialization failed, state: ${audioRecord?.state}")
+                LogServer.log("AudioRecord initialization failed")
                 audioRecord?.release()
                 audioRecord = null
                 false
             }
         } catch (e: Exception) {
             LogServer.log("AudioRecord setup error: ${e.message}")
-            e.printStackTrace()
             false
         }
     }
@@ -429,132 +427,71 @@ class AudioCaptureService : Service() {
     private fun startAudioStreamLoop() {
         captureJob = serviceScope.launch(Dispatchers.IO) {
             val buffer = ByteArray(BUFFER_SIZE)
-            var totalBytesRead = 0L
             var packetCount = 0
-
-            LogServer.log("Audio stream loop started")
-            
             while (isActive && isCapturing) {
                 val bytesRead = audioRecord?.read(buffer, 0, BUFFER_SIZE) ?: -1
-
                 if (bytesRead > 0) {
-                    totalBytesRead += bytesRead
                     packetCount++
-                    
-                    // Log every 100 packets
-                    if (packetCount % 100 == 0) {
-                        LogServer.log("Audio: sent $packetCount packets, ${totalBytesRead} bytes total")
-                    }
-                    
                     raopClient?.streamAudio(buffer.copyOf(bytesRead))
                 } else if (bytesRead < 0) {
-                    // Error reading audio
-                    LogServer.log("Audio read error: $bytesRead")
                     break
                 } else {
-                    // No data available
                     Thread.sleep(10)
                 }
             }
-            
-            LogServer.log("Audio stream loop ended: $packetCount packets, ${totalBytesRead} bytes total")
         }
     }
 
-    private fun stopCapture() {
-        // Set flag first to stop all loops immediately
+    private fun stopCapture(stopProjection: Boolean) {
         isCapturing = false
         
-        // Notify UI on main thread
         android.os.Handler(android.os.Looper.getMainLooper()).post {
             onStateChanged?.invoke(false)
         }
         
-        if (raopClient == null && audioRecord == null) return // Already cleaning/cleaned
+        LogServer.log("stopCapture(stopProjection=$stopProjection) called")
         
-        LogServer.log("stopCapture() called - cleaning up")
-        
-        // Pause media playback so audio doesn't continue on phone speaker
         pauseMediaPlayback()
-        
-        // Cancel all pending jobs immediately
         connectionJob?.cancel()
         connectionJob = null
         captureJob?.cancel()
         captureJob = null
 
-        // Stop and release audio record
         try {
             audioRecord?.stop()
-        } catch (e: Exception) {
-            LogServer.log("Error stopping audioRecord: ${e.message}")
-        }
-        try {
             audioRecord?.release()
-        } catch (e: Exception) {
-            LogServer.log("Error releasing audioRecord: ${e.message}")
-        }
+        } catch (_: Exception) {}
         audioRecord = null
 
-        // Disconnect clients in background to avoid blocking main thread
-        // IMPORTANT: Clear callback first to prevent recursion (disconnect triggers callback -> triggers stopCapture)
         raopClient?.callback = null
-        
         val clientToDisconnect = raopClient
         raopClient = null
-        
         serviceScope.launch(Dispatchers.IO) {
+            try { clientToDisconnect?.disconnect() } catch (_: Exception) {}
+        }
+
+        if (stopProjection) {
             try {
-                clientToDisconnect?.disconnect()
-            } catch (e: Exception) {
-                LogServer.log("Error disconnecting RAOP client: ${e.message}")
-            }
+                mediaProjection?.stop()
+                LogServer.log("MediaProjection FULL stop")
+            } catch (_: Exception) {}
+            mediaProjection = null
         }
 
-        // Stop MediaProjection - this MUST be called to stop screen sharing indicator
-        try {
-            mediaProjection?.stop()
-            LogServer.log("MediaProjection stopped")
-        } catch (e: Exception) {
-            LogServer.log("Error stopping MediaProjection: ${e.message}")
-        }
-        mediaProjection = null
-
-        // Remove foreground notification
         stopForeground(STOP_FOREGROUND_REMOVE)
-        
-        LogServer.log("stopCapture() complete")
     }
 
     private fun createNotificationChannel() {
-        val channel = NotificationChannel(
-            CHANNEL_ID,
-            "AirPlay Streaming",
-            NotificationManager.IMPORTANCE_LOW
-        ).apply {
-            description = "Shows when streaming to AirPlay speaker"
-        }
-        
-        val notificationManager = getSystemService(NotificationManager::class.java)
-        notificationManager.createNotificationChannel(channel)
+        val channel = NotificationChannel(CHANNEL_ID, "AirPlay Streaming", NotificationManager.IMPORTANCE_LOW)
+        getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
     }
 
     private fun createNotification(): Notification {
         val intent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
         }
-        val pendingIntent = PendingIntent.getActivity(
-            this, 0, intent, 
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-
-        val stopIntent = Intent(this, AudioCaptureService::class.java).apply {
-            action = ACTION_STOP
-        }
-        val stopPendingIntent = PendingIntent.getService(
-            this, 1, stopIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
+        val pendingIntent = PendingIntent.getActivity(this, 0, intent, PendingIntent.FLAG_IMMUTABLE)
+        val stopPendingIntent = PendingIntent.getService(this, 1, Intent(this, AudioCaptureService::class.java).apply { action = ACTION_STOP }, PendingIntent.FLAG_IMMUTABLE)
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(getString(R.string.streaming_notification_title, deviceName))
@@ -568,46 +505,18 @@ class AudioCaptureService : Service() {
 
     fun isCurrentlyStreaming(): Boolean = isCapturing
 
-    /**
-     * Set volume on the AirPlay speaker (0.0 to 1.0)
-     */
     fun setVolume(volume: Float) {
-        serviceScope.launch {
-            try {
-                raopClient?.setVolume(volume)
-                LogServer.log("Volume set to ${(volume * 100).toInt()}%")
-            } catch (e: Exception) {
-                LogServer.log("Failed to set volume: ${e.message}")
-            }
-        }
+        serviceScope.launch { try { raopClient?.setVolume(volume) } catch (_: Exception) {} }
     }
 
-    /**
-     * Pause media playback using AudioManager's media key event
-     * This prevents audio from suddenly playing through phone speakers after disconnect
-     */
     private fun pauseMediaPlayback() {
         try {
             val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
             if (audioManager.isMusicActive) {
-                // Send media pause key event
                 val eventTime = android.os.SystemClock.uptimeMillis()
-                val downEvent = android.view.KeyEvent(
-                    eventTime, eventTime,
-                    android.view.KeyEvent.ACTION_DOWN,
-                    android.view.KeyEvent.KEYCODE_MEDIA_PAUSE, 0
-                )
-                val upEvent = android.view.KeyEvent(
-                    eventTime, eventTime,
-                    android.view.KeyEvent.ACTION_UP,
-                    android.view.KeyEvent.KEYCODE_MEDIA_PAUSE, 0
-                )
-                audioManager.dispatchMediaKeyEvent(downEvent)
-                audioManager.dispatchMediaKeyEvent(upEvent)
-                LogServer.log("Paused media playback")
+                audioManager.dispatchMediaKeyEvent(android.view.KeyEvent(eventTime, eventTime, android.view.KeyEvent.ACTION_DOWN, android.view.KeyEvent.KEYCODE_MEDIA_PAUSE, 0))
+                audioManager.dispatchMediaKeyEvent(android.view.KeyEvent(eventTime, eventTime, android.view.KeyEvent.ACTION_UP, android.view.KeyEvent.KEYCODE_MEDIA_PAUSE, 0))
             }
-        } catch (e: Exception) {
-            LogServer.log("Failed to pause media: ${e.message}")
-        }
+        } catch (_: Exception) {}
     }
 }

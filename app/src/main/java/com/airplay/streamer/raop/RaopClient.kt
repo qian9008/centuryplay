@@ -43,6 +43,8 @@ class RaopClient(
         private const val CHANNELS = 2
         private const val BITS_PER_SAMPLE = 16
         private const val FRAMES_PER_PACKET = 352
+        private const val STREAM_LATENCY_MS = 2500L
+        private const val STREAM_LATENCY_SAMPLES = ((STREAM_LATENCY_MS * SAMPLE_RATE) / 1000).toInt()
         private const val RSA_PADDING_OAEP = "OAEP"
         private const val RSA_PADDING_PKCS1 = "PKCS1"
     }
