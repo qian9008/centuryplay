@@ -162,10 +162,26 @@ class AudioCaptureService : Service() {
             stopCapture(false) // Soft stop: don't release MediaProjection
         }
 
-        // Android 14+: Must have MediaProjection token BEFORE starting FGS of type mediaProjection
+        // Robust FGS start for Android 14 constraints
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(NOTIFICATION_ID, createNotification(), android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
+            } else {
+                startForeground(NOTIFICATION_ID, createNotification())
+            }
+        } catch (e: Exception) {
+            LogServer.log("Failed explicit FGS type start: ${e.message}")
+            try {
+                startForeground(NOTIFICATION_ID, createNotification())
+            } catch (e2: Exception) {
+                LogServer.log("Failed basic FGS start: ${e2.message}")
+            }
+        }
+
+        // Android 14+: Must have MediaProjection token AFTER starting FGS of type mediaProjection (or vice-versa depending on OEM bugs)
         if (mediaProjection == null) {
             try {
-                LogServer.log("Requesting new MediaProjection BEFORE foregrounding")
+                LogServer.log("Requesting new MediaProjection")
                 val projectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
                 mediaProjection = projectionManager.getMediaProjection(resultCode, resultData)
             } catch (e: Exception) {
@@ -176,13 +192,6 @@ class AudioCaptureService : Service() {
             }
         } else {
             LogServer.log("Reusing existing MediaProjection")
-        }
-
-        // Start foreground with explicit proper Type for Android 14+
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(NOTIFICATION_ID, createNotification(), android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
-        } else {
-            startForeground(NOTIFICATION_ID, createNotification())
         }
         
         connectionJob?.cancel()

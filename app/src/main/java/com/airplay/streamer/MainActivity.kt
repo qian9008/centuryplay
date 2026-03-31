@@ -448,7 +448,16 @@ class MainActivity : AppCompatActivity() {
             .putInt("last_device_port", device.port)
             .apply()
 
-        startForegroundService(serviceIntent)
+        try {
+            startForegroundService(serviceIntent)
+        } catch (e: Exception) {
+            try {
+                startService(serviceIntent)
+            } catch (e2: Exception) {
+                Toast.makeText(this, "Failed to start service: " + e.message, Toast.LENGTH_SHORT).show()
+                return
+            }
+        }
         
         // Update UI immediately to show streaming state
         viewModel.setStreamingState(true)
