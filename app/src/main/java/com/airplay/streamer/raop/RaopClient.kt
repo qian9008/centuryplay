@@ -492,10 +492,6 @@ class RaopClient(
      */
     private fun startSyncSender() {
         val socket = controlSocket ?: return
-        if (audioTransport != "udp") {
-            logD("Skipping sync sender for audio transport $audioTransport")
-            return
-        }
         if (serverControlPort == 0) {
             logE("Cannot start sync sender - serverControlPort is 0")
             return
@@ -791,8 +787,8 @@ class RaopClient(
 
                     // Send to server
                     if (audioTransport == "tcp") {
-                        val framedPacket = buildTcpAudioPacket(rtpPacket)
-                        audioTcpOutput?.write(framedPacket)
+                        logTcpAudioPacket(rtpPacket)
+                        audioTcpOutput?.write(rtpPacket)
                         audioTcpOutput?.flush()
                     } else {
                         val address = InetAddress.getByName(host)
@@ -1063,21 +1059,12 @@ class RaopClient(
         logD("Opened audio TCP socket to $host:$serverPort")
     }
 
-    private fun buildTcpAudioPacket(rtpPacket: ByteArray): ByteArray {
-        // Try RTSP interleaved framing on the dedicated TCP audio socket.
-        val framed = ByteArray(rtpPacket.size + 4)
-        framed[0] = '$'.code.toByte()
-        framed[1] = 0x00 // audio channel
-        framed[2] = (rtpPacket.size shr 8).toByte()
-        framed[3] = rtpPacket.size.toByte()
-        System.arraycopy(rtpPacket, 0, framed, 4, rtpPacket.size)
-
+    private fun logTcpAudioPacket(rtpPacket: ByteArray) {
         tcpAudioPacketCount++
         if (tcpAudioPacketCount <= 3) {
-            val preview = framed.take(12).joinToString(" ") { "%02X".format(it) }
-            logD("TCP audio packet #$tcpAudioPacketCount framed bytes: $preview")
+            val preview = rtpPacket.take(12).joinToString(" ") { "%02X".format(it) }
+            logD("TCP audio packet #$tcpAudioPacketCount raw bytes: $preview")
         }
-        return framed
     }
 
     // SDP payload is chosen from the receiver's advertised RAOP capabilities when available.
