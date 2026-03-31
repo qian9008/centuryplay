@@ -370,19 +370,32 @@ class AudioCaptureService : Service() {
         codecCapabilities: String?,
         encryptionCapabilities: String?
     ): List<RaopCompatibilityMode> {
-        val supportsL16 = codecCapabilities.isNullOrBlank() || codecCapabilities.split(",").map { it.trim() }.contains("0")
-        val supportsEncrypted = encryptionCapabilities.isNullOrBlank() || encryptionCapabilities.split(",").map { it.trim() }.contains("1")
+        val codecSet = codecCapabilities?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() }?.toSet() ?: emptySet()
+        val encryptionSet = encryptionCapabilities?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() }?.toSet() ?: emptySet()
+        val supportsL16 = codecSet.isEmpty() || codecSet.contains("0")
+        val supportsClassicRaopEncryption = encryptionSet.isEmpty() || encryptionSet.contains("1")
+        val supportsPlain = encryptionSet.isEmpty() || encryptionSet.contains("0")
 
-        val candidates = listOf(
-            RaopCompatibilityMode("L16 + PKCS1 + AES", useAlac = false, useEncryption = true, rsaPadding = "PKCS1"),
-            RaopCompatibilityMode("L16 + OAEP + AES", useAlac = false, useEncryption = true, rsaPadding = "OAEP")
-        )
+        val candidates = buildList {
+            if (supportsPlain && !supportsClassicRaopEncryption) {
+                add(RaopCompatibilityMode("L16 + plain", useAlac = false, useEncryption = false, rsaPadding = "OAEP"))
+            }
+            if (supportsClassicRaopEncryption) {
+                add(RaopCompatibilityMode("L16 + PKCS1 + AES", useAlac = false, useEncryption = true, rsaPadding = "PKCS1"))
+                add(RaopCompatibilityMode("L16 + OAEP + AES", useAlac = false, useEncryption = true, rsaPadding = "OAEP"))
+            }
+            if (supportsPlain && supportsClassicRaopEncryption) {
+                add(RaopCompatibilityMode("L16 + plain", useAlac = false, useEncryption = false, rsaPadding = "OAEP"))
+            }
+        }
 
         return candidates.filter { mode ->
             val codecOk = supportsL16 && !mode.useAlac
-            val encryptionOk = supportsEncrypted && mode.useEncryption
+            val encryptionOk = if (mode.useEncryption) supportsClassicRaopEncryption else supportsPlain
             codecOk && encryptionOk
-        }.ifEmpty { candidates }
+        }.ifEmpty {
+            listOf(RaopCompatibilityMode("L16 + plain", useAlac = false, useEncryption = false, rsaPadding = "OAEP"))
+        }
     }
 
     private fun tryAudioPlaybackCapture(): Boolean {
