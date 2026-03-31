@@ -44,6 +44,7 @@ class RaopClient(
     private val clientInstance = generateHexId(8)
     private val dacpId = clientInstance
     private val activeRemote = Random.nextLong(100000000, 4294967295).toString()
+    private val localMacAddress = generateHexId(6).uppercase()
 
     private var rtspSocket: Socket? = null
     private var rtspReader: BufferedReader? = null
@@ -319,8 +320,8 @@ class RaopClient(
             val factory = KeyFactory.getInstance("RSA")
             val publicKey = factory.generatePublic(spec)
             
-            // shairport-sync expects RSA-OAEP with SHA-1 (not PKCS1 v1.5)
-            val cipher = Cipher.getInstance("RSA/ECB/OAEPWithSHA-1AndMGF1Padding")
+            // AirPlay 1 (RAOP) traditionally uses PKCS#1 v1.5 padding for RSA
+            val cipher = Cipher.getInstance("RSA/ECB/PKCS1Padding")
             cipher.init(Cipher.ENCRYPT_MODE, publicKey)
             
             val encryptedKey = cipher.doFinal(aesKey)
@@ -836,7 +837,8 @@ class RaopClient(
                 "Content-Type" to "text/parameters",
                 "Content-Length" to volumeStr.length.toString()
             ),
-            volumeStr
+            volumeStr,
+            sessionId = serverSessionId
         )
 
         rtspWriter?.print(request)
@@ -958,6 +960,7 @@ class RaopClient(
         sb.append("Client-Instance: $clientInstance\r\n")
         sb.append("DACP-ID: $dacpId\r\n")
         sb.append("Active-Remote: $activeRemote\r\n")
+        sb.append("X-Apple-Device-ID: $localMacAddress\r\n")
 
         if (sessionId != null) {
             sb.append("Session: $sessionId\r\n")
