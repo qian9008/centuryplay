@@ -726,6 +726,8 @@ class RaopClient(
         
         if (response?.first == 200) {
             isStreaming.set(true)
+            // Send empty metadata to wake up some receivers
+            sendMetadata()
             // Start sending sync packets to tell receiver when to play audio
             startSyncSender()
             // Start connection health monitor
@@ -971,6 +973,25 @@ class RaopClient(
         return sb.toString()
     }
 
+    /**
+     * Send empty metadata to the speaker - some receivers need this to start playback
+     */
+    private fun sendMetadata(): Boolean {
+        val metadata = "metadata: \r\n"
+        val request = buildRtspRequest(
+            "SET_PARAMETER",
+            mapOf(
+                "Content-Type" to "text/parameters",
+                "Content-Length" to metadata.length.toString()
+            ),
+            metadata,
+            sessionId = serverSessionId
+        )
+        rtspWriter?.print(request)
+        rtspWriter?.flush()
+        return parseRtspResponse()?.first == 200
+    }
+
     private fun parseRtspResponse(): Pair<Int, Map<String, String>>? {
         val headers = mutableMapOf<String, String>()
 
@@ -1026,10 +1047,12 @@ class RaopClient(
 
         if (useAlacEncoding) {
             sdpLines.add("a=rtpmap:96 AppleLossless")
-            sdpLines.add("a=fmtp:96 352/0/16/40/10/14/2/1415/0/0/44100")
+            sdpLines.add("a=fmtp:96 352/0/16/40/10/14/2/255/1415/0/44100")
         } else {
             sdpLines.add("a=rtpmap:96 L16/44100/2")
         }
+
+        sdpLines.add("a=latency:11025")
 
         if (useEncryption) {
             sdpLines.add("a=rsaaeskey:$rsaAesKey")
