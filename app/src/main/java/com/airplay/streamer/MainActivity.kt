@@ -438,6 +438,8 @@ class MainActivity : AppCompatActivity() {
             putExtra(AudioCaptureService.EXTRA_HOST, device.host)
             putExtra(AudioCaptureService.EXTRA_PORT, device.port)
             putExtra(AudioCaptureService.EXTRA_DEVICE_NAME, device.displayName)
+            putExtra(AudioCaptureService.EXTRA_CODEC_CAPABILITIES, device.features["cn"])
+            putExtra(AudioCaptureService.EXTRA_ENCRYPTION_CAPABILITIES, device.features["et"])
         }
         
         // Save Last Device for Auto-Connect

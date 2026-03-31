@@ -29,7 +29,9 @@ import kotlin.random.Random
  */
 class RaopClient(
     private val host: String,
-    private val port: Int
+    private val port: Int,
+    private val codecCapabilities: String? = null,
+    private val encryptionCapabilities: String? = null
 ) {
     companion object {
         private const val TAG = "RaopClient"
@@ -95,11 +97,10 @@ class RaopClient(
 
     private var aesKey: ByteArray? = null
     private var aesIv: ByteArray? = null
-    private var aesCipher: Cipher? = null
 
     // Configuration flags
     private var useEncryption = true
-    private var useAlacEncoding = true  // Use ALAC again, now that the header bug is fixed
+    private var useAlacEncoding = false
 
     interface StreamingCallback {
         fun onConnected()
@@ -114,6 +115,7 @@ class RaopClient(
     suspend fun connect(): Boolean = withContext(Dispatchers.IO) {
         try {
             logD("Connecting to $host:$port")
+            configureCompatibility()
             
             // Create RTSP socket with short timeout for diagnostics
             rtspSocket = Socket(host, port).apply {
@@ -207,14 +209,20 @@ class RaopClient(
      * ANNOUNCE - Describe the audio format to the server
      */
     private fun announce(): Boolean {
-        // Generate encryption keys
-        generateKeys()
-        val rsaAesKey = encryptRsaAesKey()
-        if (rsaAesKey == null) {
-            logE("Failed to encrypt AES key")
-            return false
+        val rsaAesKey: String?
+        val aesIvBase64: String?
+        if (useEncryption) {
+            generateKeys()
+            rsaAesKey = encryptRsaAesKey()
+            if (rsaAesKey == null) {
+                logE("Failed to encrypt AES key")
+                return false
+            }
+            aesIvBase64 = Base64.getEncoder().encodeToString(aesIv!!)
+        } else {
+            rsaAesKey = null
+            aesIvBase64 = null
         }
-        val aesIvBase64 = Base64.getEncoder().encodeToString(aesIv)
 
         val localIp = rtspSocket?.localAddress?.hostAddress ?: "0.0.0.0"
         val sdp = buildSdp(localIp, rsaAesKey, aesIvBase64)
@@ -289,18 +297,7 @@ class RaopClient(
         aesIv = ByteArray(16)
         Random.nextBytes(aesKey!!)
         Random.nextBytes(aesIv!!)
-        
-        // Initialize AES-128-CBC cipher for audio encryption
-        try {
-            aesCipher = Cipher.getInstance("AES/CBC/NoPadding")
-            val keySpec = SecretKeySpec(aesKey, "AES")
-            val ivSpec = IvParameterSpec(aesIv)
-            aesCipher?.init(Cipher.ENCRYPT_MODE, keySpec, ivSpec)
-            logD("AES cipher initialized successfully")
-        } catch (e: Exception) {
-            logE("Failed to initialize AES cipher: ${e.message}")
-            aesCipher = null
-        }
+        logD("Generated AES session key and IV")
     }
 
     /**
@@ -320,11 +317,11 @@ class RaopClient(
             val factory = KeyFactory.getInstance("RSA")
             val publicKey = factory.generatePublic(spec)
             
-            // AirPlay 1 (RAOP) traditionally uses PKCS#1 v1.5 padding for RSA
-            val cipher = Cipher.getInstance("RSA/ECB/PKCS1Padding")
+            // Most RAOP receivers, including shairport-sync, expect OAEP with SHA-1/MGF1.
+            val cipher = Cipher.getInstance("RSA/ECB/OAEPWithSHA-1AndMGF1Padding")
             cipher.init(Cipher.ENCRYPT_MODE, publicKey)
             
-            val encryptedKey = cipher.doFinal(aesKey)
+            val encryptedKey = cipher.doFinal(aesKey!!)
             return Base64.getEncoder().encodeToString(encryptedKey)
         } catch (e: Exception) {
             logE("RSA Encryption failed: ${e.message}")
@@ -1036,9 +1033,9 @@ class RaopClient(
         }
     }
 
-    // Encryption is required for proper AirPlay compatibility
+    // SDP payload is chosen from the receiver's advertised RAOP capabilities when available.
     
-    private fun buildSdp(localIp: String, rsaAesKey: String, aesIv: String): String {
+    private fun buildSdp(localIp: String, rsaAesKey: String?, aesIv: String?): String {
         val sdpLines = mutableListOf(
             "v=0",
             "o=iTunes $localSessionId 0 IN IP4 $localIp",
@@ -1057,7 +1054,7 @@ class RaopClient(
 
         sdpLines.add("a=latency:11025")
 
-        if (useEncryption) {
+        if (useEncryption && rsaAesKey != null && aesIv != null) {
             sdpLines.add("a=rsaaeskey:$rsaAesKey")
             sdpLines.add("a=aesiv:$aesIv")
         } else {
@@ -1172,6 +1169,36 @@ class RaopClient(
 
     fun isConnected(): Boolean = isConnected.get()
     fun isStreaming(): Boolean = isStreaming.get()
+
+    private fun configureCompatibility() {
+        val codecSet = parseCapabilityList(codecCapabilities)
+        val encryptionSet = parseCapabilityList(encryptionCapabilities)
+
+        useAlacEncoding = when {
+            codecSet.contains("0") -> false
+            codecSet.contains("1") -> true
+            else -> false
+        }
+
+        useEncryption = when {
+            encryptionSet.contains("1") -> true
+            encryptionSet.contains("0") -> false
+            else -> true
+        }
+
+        logD(
+            "Compatibility: cn=${codecCapabilities ?: "<unknown>"} et=${encryptionCapabilities ?: "<unknown>"} " +
+                "=> codec=${if (useAlacEncoding) "ALAC" else "L16"} encryption=${if (useEncryption) "RSA/AES" else "none"}"
+        )
+    }
+
+    private fun parseCapabilityList(value: String?): Set<String> {
+        if (value.isNullOrBlank()) return emptySet()
+        return value.split(",")
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .toSet()
+    }
     
     // Logging helpers - log to both Android logcat and web LogServer
     private fun logD(msg: String) {
