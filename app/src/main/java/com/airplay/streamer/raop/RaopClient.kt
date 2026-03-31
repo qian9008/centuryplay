@@ -345,13 +345,10 @@ class RaopClient(
         
         Log.d(TAG, "SETUP with control_port=$localControlPort, timing_port=$localTimingPort")
 
-        // Start timing responder thread
-        startTimingResponder()
-
         val request = buildRtspRequest(
             "SETUP",
             mapOf(
-                "Transport" to "RTP/AVP/UDP;unicast;interleaved=0-1;mode=record;control_port=$localControlPort;timing_port=$localTimingPort"
+                "Transport" to "RTP/AVP/UDP;unicast;mode=record;control_port=$localControlPort;timing_port=$localTimingPort"
             )
         )
         logD("SETUP request [${modeLabel ?: "<default>"}]:\n$request")
@@ -364,6 +361,9 @@ class RaopClient(
             val transportHeader = response.second["Transport"] ?: return false
             parseTransportHeader(transportHeader)
             logD("SETUP succeeded - serverPort=$serverPort")
+
+            // Only start the timing responder after the server accepted the transport.
+            startTimingResponder()
 
             // Parse Session header
             val sessionVal = response.second["Session"]
