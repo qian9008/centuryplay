@@ -289,8 +289,7 @@ class AudioCaptureService : Service() {
 
             val connected = raopClient?.connect() ?: false
             if (connected) {
-                LogServer.log("RAOP connection established, setting initial volume")
-                raopClient?.setVolume(0.8f)
+                LogServer.log("RAOP connection established")
                 return true
             }
 

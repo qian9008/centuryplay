@@ -759,8 +759,6 @@ class RaopClient(
         
         if (response?.first == 200) {
             isStreaming.set(true)
-            // Send empty metadata to wake up some receivers
-            sendMetadata()
             // Start sending sync packets to tell receiver when to play audio
             startSyncSender()
             // Keep the RTSP control session active on receivers that close it aggressively.
