@@ -254,7 +254,8 @@ class AudioCaptureService : Service() {
                 encryptionCapabilities = encryptionCapabilities,
                 forceAlacEncoding = mode.useAlac,
                 forceEncryption = mode.useEncryption,
-                rsaPaddingMode = mode.rsaPadding
+                rsaPaddingMode = mode.rsaPadding,
+                modeLabel = mode.label
             )
 
             raopClient?.callback = object : RaopClient.StreamingCallback {

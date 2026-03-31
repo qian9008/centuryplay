@@ -34,7 +34,8 @@ class RaopClient(
     private val encryptionCapabilities: String? = null,
     private val forceAlacEncoding: Boolean? = null,
     private val forceEncryption: Boolean? = null,
-    private val rsaPaddingMode: String? = null
+    private val rsaPaddingMode: String? = null,
+    private val modeLabel: String? = null
 ) {
     companion object {
         private const val TAG = "RaopClient"
@@ -123,7 +124,7 @@ class RaopClient(
      */
     suspend fun connect(): Boolean = withContext(Dispatchers.IO) {
         try {
-            logD("Connecting to $host:$port")
+            logD("Connecting to $host:$port mode=${modeLabel ?: "<default>"}")
             configureCompatibility()
             
             // Create RTSP socket with short timeout for diagnostics
@@ -248,10 +249,10 @@ class RaopClient(
             ),
             sdp
         )
-        logD("ANNOUNCE request:\n$request")
+        logD("ANNOUNCE request [${modeLabel ?: "<default>"}]:\n$request")
 
         val response = sendRtspRequest(request)
-        logD("ANNOUNCE response: code=${response?.first}, headers=${response?.second}")
+        logD("ANNOUNCE response [${modeLabel ?: "<default>"}]: code=${response?.first}, headers=${response?.second}")
         return response?.first == 200
     }
 
@@ -353,10 +354,10 @@ class RaopClient(
                 "Transport" to "RTP/AVP/UDP;unicast;interleaved=0-1;mode=record;control_port=$localControlPort;timing_port=$localTimingPort"
             )
         )
-        logD("SETUP request:\n$request")
+        logD("SETUP request [${modeLabel ?: "<default>"}]:\n$request")
 
         val response = sendRtspRequest(request)
-        logD("SETUP response: code=${response?.first}")
+        logD("SETUP response [${modeLabel ?: "<default>"}]: code=${response?.first}, headers=${response?.second}")
         
         if (response != null && response.first == 200) {
             // Parse Transport header for server ports
