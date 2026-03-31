@@ -5,6 +5,7 @@ import com.airplay.streamer.util.LogServer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.BufferedReader
+import java.io.BufferedOutputStream
 import java.io.InputStreamReader
 import java.io.OutputStreamWriter
 import java.io.PrintWriter
@@ -64,6 +65,8 @@ class RaopClient(
     private var rtspSocket: Socket? = null
     private var rtspReader: BufferedReader? = null
     private var rtspWriter: PrintWriter? = null
+    private var audioTcpSocket: Socket? = null
+    private var audioTcpOutput: BufferedOutputStream? = null
     private val rtspRequestLock = Any()
     private var audioSocket: DatagramSocket? = null
     private var controlSocket: DatagramSocket? = null
@@ -86,6 +89,7 @@ class RaopClient(
     private var serverPort: Int = 0
     private var serverControlPort: Int = 0  // Server's control port for sync packets
     private var serverTimingPort: Int = 0   // Server's timing port
+    private var audioTransport: String = "udp"
     private var controlPort: Int = 0
     private var timingPort: Int = 0
 
@@ -382,9 +386,13 @@ class RaopClient(
             if (response != null && response.first == 200) {
                 val transportHeader = response.second["Transport"] ?: return false
                 parseTransportHeader(transportHeader)
-                logD("SETUP succeeded via ${variant.label} - serverPort=$serverPort")
+            logD("SETUP succeeded via ${variant.label} - serverPort=$serverPort")
 
-                startTimingResponder()
+                if (audioTransport == "udp") {
+                    startTimingResponder()
+                } else {
+                    openAudioTcpSocket()
+                }
 
                 val sessionVal = response.second["Session"]
                 if (sessionVal != null) {
@@ -483,6 +491,10 @@ class RaopClient(
      */
     private fun startSyncSender() {
         val socket = controlSocket ?: return
+        if (audioTransport != "udp") {
+            logD("Skipping sync sender for audio transport $audioTransport")
+            return
+        }
         if (serverControlPort == 0) {
             logE("Cannot start sync sender - serverControlPort is 0")
             return
@@ -728,7 +740,7 @@ class RaopClient(
      * @param pcmData PCM audio samples (16-bit stereo, 44100Hz, Little Endian)
      */
     suspend fun streamAudio(pcmData: ByteArray) = withContext(Dispatchers.IO) {
-        if (!isStreaming.get() || audioSocket == null) return@withContext
+        if (!isStreaming.get()) return@withContext
 
         try {
             // Append new data to buffer
@@ -777,9 +789,14 @@ class RaopClient(
                     val rtpPacket = buildRtpPacket(payloadData)
 
                     // Send to server
-                    val address = InetAddress.getByName(host)
-                    val packet = DatagramPacket(rtpPacket, rtpPacket.size, address, serverPort)
-                    audioSocket?.send(packet)
+                    if (audioTransport == "tcp") {
+                        audioTcpOutput?.write(rtpPacket)
+                        audioTcpOutput?.flush()
+                    } else {
+                        val address = InetAddress.getByName(host)
+                        val packet = DatagramPacket(rtpPacket, rtpPacket.size, address, serverPort)
+                        audioSocket?.send(packet)
+                    }
 
                     // Update sequence and timestamp
                     rtpSequence = (rtpSequence + 1) and 0xFFFF
@@ -885,6 +902,14 @@ class RaopClient(
             audioSocket?.close()
         } catch (_: Exception) {}
         audioSocket = null
+        try {
+            audioTcpOutput?.close()
+        } catch (_: Exception) {}
+        audioTcpOutput = null
+        try {
+            audioTcpSocket?.close()
+        } catch (_: Exception) {}
+        audioTcpSocket = null
         
         try {
             controlSocket?.close()
@@ -902,6 +927,7 @@ class RaopClient(
         serverTimingPort = 0
         serverSessionId = null
         syncSequence = 0
+        audioTransport = "udp"
         
         // Clear audio buffer
         synchronized(audioBuffer) {
@@ -997,6 +1023,8 @@ class RaopClient(
     }
 
     private fun parseTransportHeader(transport: String) {
+        audioTransport = if (transport.contains("RTP/AVP/TCP", ignoreCase = true)) "tcp" else "udp"
+        logD("Parsed audio transport: $audioTransport")
         transport.split(";").forEach { part ->
             val trimmedPart = part.trim()
             when {
@@ -1014,6 +1042,21 @@ class RaopClient(
                 }
             }
         }
+    }
+
+    private fun openAudioTcpSocket() {
+        if (serverPort == 0) {
+            logE("Cannot open audio TCP socket - serverPort is 0")
+            return
+        }
+        try {
+            audioTcpSocket?.close()
+        } catch (_: Exception) {}
+        audioTcpSocket = Socket(host, serverPort).apply {
+            tcpNoDelay = true
+        }
+        audioTcpOutput = BufferedOutputStream(audioTcpSocket!!.getOutputStream())
+        logD("Opened audio TCP socket to $host:$serverPort")
     }
 
     // SDP payload is chosen from the receiver's advertised RAOP capabilities when available.
