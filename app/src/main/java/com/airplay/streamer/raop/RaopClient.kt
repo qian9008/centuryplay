@@ -96,6 +96,10 @@ class RaopClient(
     private var aesIv: ByteArray? = null
     private var aesCipher: Cipher? = null
 
+    // Configuration flags
+    private var useEncryption = true
+    private var useAlacEncoding = true  // Use ALAC for better compatibility
+
     interface StreamingCallback {
         fun onConnected()
         fun onDisconnected()
