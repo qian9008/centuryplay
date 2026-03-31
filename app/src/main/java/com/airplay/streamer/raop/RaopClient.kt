@@ -37,6 +37,11 @@ class RaopClient(
     private val rsaPaddingMode: String? = null,
     private val modeLabel: String? = null
 ) {
+    private data class SetupTransportVariant(
+        val label: String,
+        val transport: String
+    )
+
     companion object {
         private const val TAG = "RaopClient"
         private const val USER_AGENT = "iTunes/4.6 (Macintosh; U; PPC Mac OS X 10.3)"
@@ -345,34 +350,51 @@ class RaopClient(
         
         Log.d(TAG, "SETUP with control_port=$localControlPort, timing_port=$localTimingPort")
 
-        val request = buildRtspRequest(
-            "SETUP",
-            mapOf(
-                "Transport" to "RTP/AVP/UDP;unicast;mode=record;control_port=$localControlPort;timing_port=$localTimingPort"
+        val variants = listOf(
+            SetupTransportVariant(
+                label = "udp ports",
+                transport = "RTP/AVP/UDP;unicast;mode=record;control_port=$localControlPort;timing_port=$localTimingPort"
+            ),
+            SetupTransportVariant(
+                label = "udp bare",
+                transport = "RTP/AVP/UDP;unicast;mode=record"
+            ),
+            SetupTransportVariant(
+                label = "avp ports",
+                transport = "RTP/AVP;unicast;mode=record;control_port=$localControlPort;timing_port=$localTimingPort"
+            ),
+            SetupTransportVariant(
+                label = "avp bare",
+                transport = "RTP/AVP;unicast;mode=record"
             )
         )
-        logD("SETUP request [${modeLabel ?: "<default>"}]:\n$request")
 
-        val response = sendRtspRequest(request)
-        logD("SETUP response [${modeLabel ?: "<default>"}]: code=${response?.first}, headers=${response?.second}")
-        
-        if (response != null && response.first == 200) {
-            // Parse Transport header for server ports
-            val transportHeader = response.second["Transport"] ?: return false
-            parseTransportHeader(transportHeader)
-            logD("SETUP succeeded - serverPort=$serverPort")
+        for (variant in variants) {
+            val request = buildRtspRequest(
+                "SETUP",
+                mapOf("Transport" to variant.transport)
+            )
+            logD("SETUP request [${modeLabel ?: "<default>"} / ${variant.label}]:\n$request")
 
-            // Only start the timing responder after the server accepted the transport.
-            startTimingResponder()
+            val response = sendRtspRequest(request)
+            logD("SETUP response [${modeLabel ?: "<default>"} / ${variant.label}]: code=${response?.first}, headers=${response?.second}")
 
-            // Parse Session header
-            val sessionVal = response.second["Session"]
-            if (sessionVal != null) {
-                serverSessionId = sessionVal.split(";")[0].trim()
-                logD("Captured server session ID: $serverSessionId")
+            if (response != null && response.first == 200) {
+                val transportHeader = response.second["Transport"] ?: return false
+                parseTransportHeader(transportHeader)
+                logD("SETUP succeeded via ${variant.label} - serverPort=$serverPort")
+
+                startTimingResponder()
+
+                val sessionVal = response.second["Session"]
+                if (sessionVal != null) {
+                    serverSessionId = sessionVal.split(";")[0].trim()
+                    logD("Captured server session ID: $serverSessionId")
+                }
+                return true
             }
-            return true
         }
+
         return false
     }
 
