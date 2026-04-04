@@ -41,30 +41,26 @@ class AlacEncoder {
     }
 
     private fun buildAlacHeader(numSamples: Int): ByteArray {
-        // ALAC uncompressed frame header (参考 shairport-sync / apple-lossless 规范)
-        // 帧头由若干 bit 字段组成，以 big-endian 位流打包：
-        //   [0]     = 0  (hasTimestamp = false)
-        //   [1]     = 0  (不用)
-        //   [2]     = 1  (uncompressed flag = 1)
-        //   [3]     = 0  (hasSize = 0, 使用 SDP 中声明的标准帧大小 352)
-        //   [4..7]  = 0000 (reserved)
-        //   共 1 字节 = 0b00100000 = 0x20
-        //
-        // 非标准帧大小时需要追加 hasSize=1 + 32-bit 样本数：
-        //   byte0 = 0b00101000 = 0x28 (hasSize=1)
-        //   bytes 1..4 = numSamples (big-endian uint32)
+        // ALAC uncompressed frame header (参考 Apple 官方规范和 shairport-sync)
+        // 未压缩 ALAC 帧格式：
+        //   byte 0: 0x00 (未压缩标志)
+        //   byte 1-4: 样本数 (big-endian, 352 for standard packets)
+        //   byte 5-8: 0x00000000 (reserved)
+        //   总共 9 字节头部 + PCM 数据
         
-        return if (numSamples == FRAMES_PER_PACKET) {
-            // 标准帧大小（352 frames），1 字节帧头，其余全是 PCM 数据
-            byteArrayOf(0x20.toByte())
-        } else {
-            // 非标准帧大小，5 字节帧头
-            val buffer = ByteBuffer.allocate(5)
-            buffer.order(ByteOrder.BIG_ENDIAN)
-            buffer.put(0x28.toByte())     // hasSize=1
-            buffer.putInt(numSamples)     // 样本帧数
-            buffer.array()
-        }
+        val buffer = ByteBuffer.allocate(9)
+        buffer.order(ByteOrder.BIG_ENDIAN)
+        
+        // 未压缩标志 (0 = 未压缩)
+        buffer.put(0x00.toByte())
+        
+        // 样本数 (352 for standard AirPlay packets)
+        buffer.putInt(numSamples)
+        
+        // 保留字段
+        buffer.putInt(0)
+        
+        return buffer.array()
     }
 
     private fun convertToBigEndian(pcmData: ByteArray): ByteArray {

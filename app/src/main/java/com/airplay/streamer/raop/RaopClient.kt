@@ -14,6 +14,7 @@ import java.net.DatagramSocket
 import java.net.InetAddress
 import java.net.Socket
 import java.security.KeyFactory
+import java.security.MessageDigest
 import java.security.spec.RSAPublicKeySpec
 import java.math.BigInteger
 import javax.crypto.Cipher
@@ -36,12 +37,11 @@ class RaopClient(
     private val forceAlacEncoding: Boolean? = null,
     private val forceEncryption: Boolean? = null,
     private val rsaPaddingMode: String? = null,
-    private val modeLabel: String? = null
-) {
-    private data class SetupTransportVariant(
-        val label: String,
-        val transport: String
-    )
+    private val modeLabel: String? = null,
+    private val rtspPassword: String? = null,
+    private val streamLatencyMsOverride: Long? = null,
+    private val transportMode: String? = null  // "auto", "tcp", or "udp"
+)
 
     companion object {
         private const val TAG = "RaopClient"
@@ -50,10 +50,10 @@ class RaopClient(
         private const val CHANNELS = 2
         private const val BITS_PER_SAMPLE = 16
         private const val FRAMES_PER_PACKET = 352
-        private const val STREAM_LATENCY_MS = 2500L
-        private const val STREAM_LATENCY_SAMPLES = ((STREAM_LATENCY_MS * SAMPLE_RATE) / 1000).toInt()
+        private const val DEFAULT_STREAM_LATENCY_MS = 1100L
         private const val RSA_PADDING_OAEP = "OAEP"
         private const val RSA_PADDING_PKCS1 = "PKCS1"
+        private const val RETRANSMIT_CACHE_SIZE = 512
     }
     
     // Client identifiers (as per AirPlay spec)
@@ -76,6 +76,7 @@ class RaopClient(
     private var isTimingRunning = AtomicBoolean(false)
     // Helper to run the sync packet thread
     private var isSyncRunning = AtomicBoolean(false)
+    private var isControlReceiverRunning = AtomicBoolean(false)
     // Helper to run connection health monitor
     private var isHealthMonitorRunning = AtomicBoolean(false)
     // Helper to run RTSP keepalive
@@ -123,6 +124,26 @@ class RaopClient(
     private var useEncryption = true
     private var useAlacEncoding = false
     private var currentRsaPaddingMode = RSA_PADDING_OAEP
+    private val streamLatencyMs: Long = (streamLatencyMsOverride ?: DEFAULT_STREAM_LATENCY_MS).coerceIn(250L, 5000L)
+    private val streamLatencySamples: Int = ((streamLatencyMs * SAMPLE_RATE) / 1000L).toInt()
+
+    private data class DigestChallenge(
+        val scheme: String,
+        val realm: String?,
+        val nonce: String?,
+        val algorithm: String?,
+        val qop: String?,
+        val opaque: String?
+    )
+    private var digestChallenge: DigestChallenge? = null
+    private var cachedAuthorizationHeader: String? = null
+    private var digestNonceCount: Int = 0
+
+    private val retransmitCache = object : LinkedHashMap<Int, ByteArray>(RETRANSMIT_CACHE_SIZE, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Int, ByteArray>?): Boolean {
+            return size > RETRANSMIT_CACHE_SIZE
+        }
+    }
 
     interface StreamingCallback {
         fun onConnected()
@@ -512,7 +533,7 @@ class RaopClient(
         logD("Starting sync sender to $host:$serverControlPort using local control port $controlPort")
         isSyncRunning.set(true)
         syncSequence = 0
-        logD("Sync timing established: rtpTimestamp=$rtpTimestamp, latency=${STREAM_LATENCY_MS}ms")
+        logD("Sync timing established: rtpTimestamp=$rtpTimestamp, latency=${streamLatencyMs}ms")
         
         Thread {
             try {
@@ -525,14 +546,14 @@ class RaopClient(
                     // Send sync packet every 300ms
                     if (now - lastSyncTime >= 300) {
                         val currentRtp = rtpTimestamp
-                        val playTimeMs = now + STREAM_LATENCY_MS
+                        val playTimeMs = now + streamLatencyMs
                         val syncPacket = buildSyncPacket(currentRtp, playTimeMs)
                         val packet = DatagramPacket(syncPacket, syncPacket.size, address, serverControlPort)
                         socket.send(packet)
                         
                         syncSequence++
                         if (syncSequence <= 5 || syncSequence % 20 == 0) {
-                            logD("Sync #$syncSequence: currentRtp=$currentRtp playAt=${currentRtp + STREAM_LATENCY_SAMPLES} playTime=$playTimeMs")
+                            logD("Sync #$syncSequence: currentRtp=$currentRtp playAt=${currentRtp + streamLatencySamples} playTime=$playTimeMs")
                         }
                         lastSyncTime = now
                     }
@@ -581,7 +602,7 @@ class RaopClient(
         writeNtpTimestamp(packet, 8, ntpSec, ntpFrac)
         
         // Future RTP play point with the standard AirPlay buffer latency applied.
-        val nextRtp = currentRtp + STREAM_LATENCY_SAMPLES
+        val nextRtp = currentRtp + streamLatencySamples
         packet[16] = (nextRtp shr 24).toByte()
         packet[17] = (nextRtp shr 16).toByte()
         packet[18] = (nextRtp shr 8).toByte()
@@ -592,6 +613,70 @@ class RaopClient(
     
     private fun stopSyncSender() {
         isSyncRunning.set(false)
+    }
+
+    private fun startControlReceiver() {
+        val socket = controlSocket ?: return
+        if (serverControlPort == 0) return
+        if (isControlReceiverRunning.get()) return
+
+        isControlReceiverRunning.set(true)
+        Thread {
+            val buffer = ByteArray(1500)
+            val packet = DatagramPacket(buffer, buffer.size)
+            try {
+                while (isControlReceiverRunning.get() && !socket.isClosed) {
+                    socket.receive(packet)
+                    if (packet.length < 8) continue
+                    val data = packet.data
+                    val payloadType = data[1].toInt() and 0x7F
+                    // Accept common resend-request payload types from different receivers.
+                    if (payloadType == 0x55 || payloadType == 0x56) {
+                        val (startSeq, count) = parseRetransmitRange(data, packet.length)
+                        if (count > 0) {
+                            resendRtpPackets(startSeq, count)
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                if (isControlReceiverRunning.get()) {
+                    logE("Control receiver error: ${e.message}")
+                }
+            }
+            logD("Control receiver finished")
+        }.start()
+    }
+
+    private fun stopControlReceiver() {
+        isControlReceiverRunning.set(false)
+    }
+
+    private fun parseRetransmitRange(data: ByteArray, length: Int): Pair<Int, Int> {
+        if (length >= 8) {
+            val firstA = ((data[4].toInt() and 0xFF) shl 8) or (data[5].toInt() and 0xFF)
+            val countA = ((data[6].toInt() and 0xFF) shl 8) or (data[7].toInt() and 0xFF)
+            if (countA in 1..128) return firstA to countA
+            val firstB = ((data[2].toInt() and 0xFF) shl 8) or (data[3].toInt() and 0xFF)
+            val countB = ((data[4].toInt() and 0xFF) shl 8) or (data[5].toInt() and 0xFF)
+            if (countB in 1..128) return firstB to countB
+        }
+        return 0 to 0
+    }
+
+    private fun resendRtpPackets(startSequence: Int, count: Int) {
+        val socket = controlSocket ?: return
+        val address = InetAddress.getByName(host)
+        var resent = 0
+        for (i in 0 until count) {
+            val seq = (startSequence + i) and 0xFFFF
+            val pkt = lookupRtpPacket(seq) ?: continue
+            val resendPacket = DatagramPacket(pkt, pkt.size, address, serverControlPort)
+            socket.send(resendPacket)
+            resent++
+        }
+        if (resent > 0) {
+            logD("Retransmit served: start=$startSequence count=$count sent=$resent")
+        }
     }
 
     private fun startKeepAlive() {
@@ -701,6 +786,7 @@ class RaopClient(
         // Stop all background threads
         stopHealthMonitor()
         stopSyncSender()
+        stopControlReceiver()
         stopKeepAlive()
         stopTimingResponder()
         
@@ -729,6 +815,13 @@ class RaopClient(
             audioBuffer.reset()
         }
         
+        synchronized(retransmitCache) {
+            retransmitCache.clear()
+        }
+
+        digestChallenge = null
+        cachedAuthorizationHeader = null
+        digestNonceCount = 0
         logD("Server disconnect cleanup complete")
         callback?.onError("Server disconnected")
         callback?.onDisconnected()
@@ -761,6 +854,8 @@ class RaopClient(
             isStreaming.set(true)
             // Start sending sync packets to tell receiver when to play audio
             startSyncSender()
+            // Listen for retransmission requests on control channel.
+            startControlReceiver()
             // Keep the RTSP control session active on receivers that close it aggressively.
             startKeepAlive()
             // Start connection health monitor
@@ -797,7 +892,7 @@ class RaopClient(
                     
                     // Debug Logging: Calculate RMS periodically
                     debugPacketCount++
-                    if (debugPacketCount % 50 == 0) {
+                    if (debugPacketCount % 50 == 0 || debugPacketCount <= 5) {
                         var sum = 0.0
                         val samples = chunk.size / 2 // 16-bit samples
                         for (i in 0 until chunk.size step 2) {
@@ -806,13 +901,17 @@ class RaopClient(
                         }
                         val rms = Math.sqrt(sum / samples).toInt()
                         val db = if (rms > 0) Math.round(20 * Math.log10(rms.toDouble())) else Long.MIN_VALUE
-                        LogServer.log("SND: Pkt $rtpSequence, RMS=$rms (Max 32767), Vol=${if (db == Long.MIN_VALUE) "-inf" else "${db}dB"}")
+                        val mode = if (useAlacEncoding) "ALAC" else "L16"
+                        val enc = if (useEncryption) "ENC" else "PLAIN"
+                        LogServer.log("SND: Pkt $rtpSequence, RMS=$rms (Max 32767), Vol=${if (db == Long.MIN_VALUE) "-inf" else "${db}dB"}, Mode=$mode, Enc=$enc")
                     }
 
                     // Encode audio data
                     val encodedData = if (useAlacEncoding) {
+                        LogServer.log("ENCODING: Using ALAC encoder")
                         alacEncoder.encode(chunk)
                     } else {
+                        LogServer.log("ENCODING: Using L16 (big-endian PCM)")
                         // Fallback: Convert PCM from little-endian to big-endian (network byte order)
                         // L16 format (RFC 3551) requires big-endian (network byte order)
                         swapEndianness(chunk)
@@ -827,6 +926,7 @@ class RaopClient(
                     
                     // Build RTP packet with payload
                     val rtpPacket = buildRtpPacket(payloadData)
+                    rememberRtpPacket(rtpSequence, rtpPacket)
 
                     // Send to server
                     if (audioTransport == "tcp") {
@@ -900,6 +1000,7 @@ class RaopClient(
         
         logD("Stopping sync sender...")
         stopSyncSender()
+        stopControlReceiver()
 
         logD("Stopping keepalive...")
         stopKeepAlive()
@@ -979,6 +1080,13 @@ class RaopClient(
             audioBuffer.reset()
         }
         
+        synchronized(retransmitCache) {
+            retransmitCache.clear()
+        }
+
+        digestChallenge = null
+        cachedAuthorizationHeader = null
+        digestNonceCount = 0
         logD("Teardown complete")
         callback?.onDisconnected()
     }
@@ -1006,6 +1114,9 @@ class RaopClient(
         sb.append("DACP-ID: $dacpId\r\n")
         sb.append("Active-Remote: $activeRemote\r\n")
         sb.append("X-Apple-Device-ID: $localMacAddress\r\n")
+        cachedAuthorizationHeader?.takeIf { it.isNotBlank() }?.let {
+            sb.append("Authorization: $it\r\n")
+        }
 
         if (sessionId != null) {
             sb.append("Session: $sessionId\r\n")
@@ -1059,17 +1170,187 @@ class RaopClient(
         return statusCode to headers
     }
 
+    private fun rememberRtpPacket(sequence: Int, packet: ByteArray) {
+        synchronized(retransmitCache) {
+            retransmitCache[sequence and 0xFFFF] = packet
+        }
+    }
+
+    private fun lookupRtpPacket(sequence: Int): ByteArray? {
+        synchronized(retransmitCache) {
+            return retransmitCache[sequence and 0xFFFF]
+        }
+    }
+
     private fun sendRtspRequest(request: String): Pair<Int, Map<String, String>>? {
         synchronized(rtspRequestLock) {
             rtspWriter?.print(request)
             rtspWriter?.flush()
-            return parseRtspResponse()
+            val response = parseRtspResponse() ?: return null
+            if (response.first != 401) return response
+
+            val challengeHeader = response.second.entries.firstOrNull {
+                it.key.equals("WWW-Authenticate", ignoreCase = true)
+            }?.value
+            val challenge = parseWwwAuthenticate(challengeHeader)
+            if (challenge == null) {
+                logE("401 received without supported WWW-Authenticate header")
+                return response
+            }
+            val authorization = buildAuthorizationHeader(challenge, request)
+            if (authorization.isNullOrBlank()) {
+                logE("401 auth challenge present, but no credentials available for ${challenge.scheme}")
+                return response
+            }
+
+            digestChallenge = challenge
+            cachedAuthorizationHeader = authorization
+            val retryRequest = updateRequestForRetryWithAuthorization(request, authorization)
+            rtspWriter?.print(retryRequest)
+            rtspWriter?.flush()
+            val retryResponse = parseRtspResponse()
+            if (retryResponse?.first == 401) {
+                cachedAuthorizationHeader = null
+            }
+            return retryResponse
         }
     }
 
+    private fun parseWwwAuthenticate(header: String?): DigestChallenge? {
+        if (header.isNullOrBlank()) return null
+        val trimmed = header.trim()
+        return when {
+            trimmed.startsWith("Digest", ignoreCase = true) -> {
+                val params = parseAuthParams(trimmed.substringAfter(" ", ""))
+                DigestChallenge(
+                    scheme = "Digest",
+                    realm = params["realm"],
+                    nonce = params["nonce"],
+                    algorithm = params["algorithm"],
+                    qop = params["qop"],
+                    opaque = params["opaque"]
+                )
+            }
+            trimmed.startsWith("Basic", ignoreCase = true) -> DigestChallenge(
+                scheme = "Basic",
+                realm = null,
+                nonce = null,
+                algorithm = null,
+                qop = null,
+                opaque = null
+            )
+            else -> null
+        }
+    }
+
+    private fun parseAuthParams(params: String): Map<String, String> {
+        val regex = Regex("""(\w+)=("([^"]*)"|[^,]+)""")
+        val result = mutableMapOf<String, String>()
+        regex.findAll(params).forEach { match ->
+            val key = match.groupValues[1].trim().lowercase()
+            val value = match.groupValues[3].ifEmpty { match.groupValues[2] }.trim().trim('"')
+            result[key] = value
+        }
+        return result
+    }
+
+    private fun buildAuthorizationHeader(challenge: DigestChallenge, request: String): String? {
+        val password = rtspPassword ?: return null
+        val firstLine = request.lineSequence().firstOrNull()?.trim() ?: return null
+        val parts = firstLine.split(" ")
+        if (parts.size < 2) return null
+        val method = parts[0]
+        val uri = parts[1]
+        val userName = "AirPlay"
+
+        if (challenge.scheme.equals("Basic", ignoreCase = true)) {
+            val token = Base64.getEncoder().encodeToString("$userName:$password".toByteArray())
+            return "Basic $token"
+        }
+
+        val realm = challenge.realm ?: return null
+        val nonce = challenge.nonce ?: return null
+        val algorithm = (challenge.algorithm ?: "MD5").uppercase()
+        if (algorithm != "MD5") {
+            logE("Unsupported Digest algorithm: $algorithm")
+            return null
+        }
+
+        val ha1 = md5Hex("$userName:$realm:$password")
+        val ha2 = md5Hex("$method:$uri")
+        val qopToken = challenge.qop?.split(",")?.map { it.trim() }?.firstOrNull { it.equals("auth", ignoreCase = true) }
+        return if (qopToken != null) {
+            digestNonceCount += 1
+            val nc = "%08x".format(digestNonceCount)
+            val cnonce = generateHexId(8).lowercase()
+            val response = md5Hex("$ha1:$nonce:$nc:$cnonce:$qopToken:$ha2")
+            buildString {
+                append("Digest username=\"$userName\", realm=\"$realm\", nonce=\"$nonce\", uri=\"$uri\", response=\"$response\", qop=$qopToken, nc=$nc, cnonce=\"$cnonce\"")
+                challenge.opaque?.takeIf { it.isNotBlank() }?.let { append(", opaque=\"$it\"") }
+                append(", algorithm=MD5")
+            }
+        } else {
+            val response = md5Hex("$ha1:$nonce:$ha2")
+            buildString {
+                append("Digest username=\"$userName\", realm=\"$realm\", nonce=\"$nonce\", uri=\"$uri\", response=\"$response\"")
+                challenge.opaque?.takeIf { it.isNotBlank() }?.let { append(", opaque=\"$it\"") }
+                append(", algorithm=MD5")
+            }
+        }
+    }
+
+    private fun updateRequestForRetryWithAuthorization(request: String, authorization: String): String {
+        val lines = request.split("\r\n").toMutableList()
+        var cseqLineIndex = -1
+        var authLineIndex = -1
+        var blankLineIndex = -1
+        lines.forEachIndexed { index, line ->
+            if (line.startsWith("CSeq:", ignoreCase = true)) cseqLineIndex = index
+            if (line.startsWith("Authorization:", ignoreCase = true)) authLineIndex = index
+            if (line.isEmpty() && blankLineIndex == -1) blankLineIndex = index
+        }
+        if (cseqLineIndex >= 0) {
+            lines[cseqLineIndex] = "CSeq: ${cSeq.incrementAndGet()}"
+        }
+        val newAuth = "Authorization: $authorization"
+        if (authLineIndex >= 0) {
+            lines[authLineIndex] = newAuth
+        } else if (blankLineIndex >= 0) {
+            lines.add(blankLineIndex, newAuth)
+        } else {
+            lines.add(newAuth)
+            lines.add("")
+        }
+        return lines.joinToString("\r\n")
+    }
+
+    private fun md5Hex(input: String): String {
+        val digest = MessageDigest.getInstance("MD5").digest(input.toByteArray())
+        return digest.joinToString("") { "%02x".format(it) }
+    }
+
     private fun parseTransportHeader(transport: String) {
-        audioTransport = if (transport.contains("RTP/AVP/TCP", ignoreCase = true)) "tcp" else "udp"
-        logD("Parsed audio transport: $audioTransport")
+        // Determine transport based on user preference or server response
+        val serverSupportsTcp = transport.contains("RTP/AVP/TCP", ignoreCase = true)
+        audioTransport = when (transportMode) {
+            "tcp" -> {
+                logD("Using TCP transport (forced by user preference)")
+                "tcp"
+            }
+            "udp" -> {
+                logD("Using UDP transport (forced by user preference)")
+                "udp"
+            }
+            else -> { // "auto" or null
+                if (serverSupportsTcp) {
+                    logD("Server supports TCP, using TCP transport")
+                    "tcp"
+                } else {
+                    logD("Server supports UDP, using UDP transport")
+                    "udp"
+                }
+            }
+        }
         transport.split(";").forEach { part ->
             val trimmedPart = part.trim()
             when {
@@ -1134,7 +1415,7 @@ class RaopClient(
             sdpLines.add("a=rtpmap:96 L16/44100/2")
         }
 
-        sdpLines.add("a=latency:$STREAM_LATENCY_SAMPLES")
+        sdpLines.add("a=latency:$streamLatencySamples")
 
         if (useEncryption && rsaAesKey != null && aesIv != null) {
             sdpLines.add("a=rsaaeskey:$rsaAesKey")

@@ -21,6 +21,7 @@ import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import com.airplay.streamer.MainActivity
 import com.airplay.streamer.R
+import com.airplay.streamer.SettingsActivity
 import com.airplay.streamer.raop.RaopClient
 import com.airplay.streamer.util.LogServer
 import kotlinx.coroutines.CoroutineScope
@@ -66,6 +67,7 @@ class AudioCaptureService : Service() {
         const val EXTRA_DEVICE_NAME = "device_name"
         const val EXTRA_CODEC_CAPABILITIES = "codec_capabilities"
         const val EXTRA_ENCRYPTION_CAPABILITIES = "encryption_capabilities"
+        const val EXTRA_RTSP_PASSWORD = "rtsp_password"
 
         // Singleton for accessing streaming state
         var instance: AudioCaptureService? = null
@@ -89,6 +91,7 @@ class AudioCaptureService : Service() {
     private var shouldStayStopped = false
     private var codecCapabilities: String? = null
     private var encryptionCapabilities: String? = null
+    private var rtspPassword: String? = null
     private var targetHost: String? = null
     private var targetPort: Int = 0
 
@@ -120,6 +123,7 @@ class AudioCaptureService : Service() {
                 deviceName = intent.getStringExtra(EXTRA_DEVICE_NAME) ?: "AirPlay Speaker"
                 codecCapabilities = intent.getStringExtra(EXTRA_CODEC_CAPABILITIES)
                 encryptionCapabilities = intent.getStringExtra(EXTRA_ENCRYPTION_CAPABILITIES)
+                rtspPassword = intent.getStringExtra(EXTRA_RTSP_PASSWORD)
                 targetHost = host
                 targetPort = port
                 shouldStayStopped = false
@@ -256,15 +260,21 @@ class AudioCaptureService : Service() {
                 raopClient?.disconnect()
             } catch (_: Exception) {}
             
+            // Read transport mode preference
+            val prefs = getSharedPreferences(SettingsActivity.PREFS_NAME, MODE_PRIVATE)
+            val transportMode = prefs.getString(SettingsActivity.KEY_TRANSPORT_MODE, SettingsActivity.TRANSPORT_AUTO)
+            
             raopClient = RaopClient(
                 host = host,
                 port = port,
                 codecCapabilities = codecCapabilities,
                 encryptionCapabilities = encryptionCapabilities,
+                rtspPassword = rtspPassword,
                 forceAlacEncoding = mode.useAlac,
                 forceEncryption = mode.useEncryption,
                 rsaPaddingMode = mode.rsaPadding,
-                modeLabel = mode.label
+                modeLabel = mode.label,
+                transportMode = transportMode
             )
 
             raopClient?.callback = object : RaopClient.StreamingCallback {
@@ -390,32 +400,32 @@ class AudioCaptureService : Service() {
         val supportsPlain = encryptionSet.isEmpty() || encryptionSet.contains("0")
 
         val candidates = buildList<RaopCompatibilityMode> {
-            // ── ALAC 优先（Apple 设备原生格式）──────────────────────────────
-            if (supportsAlac) {
-                if (supportsPlain) {
-                    add(RaopCompatibilityMode("ALAC + plain", useAlac = true, useEncryption = false, rsaPadding = "OAEP"))
-                }
-                if (supportsClassicRaopEncryption) {
-                    add(RaopCompatibilityMode("ALAC + PKCS1 + AES", useAlac = true, useEncryption = true, rsaPadding = "PKCS1"))
-                    add(RaopCompatibilityMode("ALAC + OAEP + AES",  useAlac = true, useEncryption = true, rsaPadding = "OAEP"))
-                }
-            }
-            // ── L16 兜底 ───────────────────────────────────────────────────
+            // ── L16 优先（更通用，兼容性更好）──────────────────────────────
             if (supportsL16) {
                 if (supportsPlain) {
                     add(RaopCompatibilityMode("L16 + plain", useAlac = false, useEncryption = false, rsaPadding = "OAEP"))
                 }
                 if (supportsClassicRaopEncryption) {
-                    add(RaopCompatibilityMode("L16 + PKCS1 + AES", useAlac = false, useEncryption = true, rsaPadding = "PKCS1"))
                     add(RaopCompatibilityMode("L16 + OAEP + AES",  useAlac = false, useEncryption = true, rsaPadding = "OAEP"))
+                    add(RaopCompatibilityMode("L16 + PKCS1 + AES", useAlac = false, useEncryption = true, rsaPadding = "PKCS1"))
+                }
+            }
+            // ── ALAC 兜底（Apple 设备原生格式）──────────────────────────────
+            if (supportsAlac) {
+                if (supportsPlain) {
+                    add(RaopCompatibilityMode("ALAC + plain", useAlac = true, useEncryption = false, rsaPadding = "OAEP"))
+                }
+                if (supportsClassicRaopEncryption) {
+                    add(RaopCompatibilityMode("ALAC + OAEP + AES",  useAlac = true, useEncryption = true, rsaPadding = "OAEP"))
+                    add(RaopCompatibilityMode("ALAC + PKCS1 + AES", useAlac = true, useEncryption = true, rsaPadding = "PKCS1"))
                 }
             }
         }
 
-        // 若设备上报了具体能力集但全部被过滤（理论上不应发生），用 ALAC+plain 兜底
+        // 若设备上报了具体能力集但全部被过滤（理论上不应发生），用 L16+plain 兜底
         return candidates.ifEmpty {
-            LogServer.log("buildCompatibilityModes: no matching modes, falling back to ALAC+plain")
-            listOf(RaopCompatibilityMode("ALAC + plain", useAlac = true, useEncryption = false, rsaPadding = "OAEP"))
+            LogServer.log("buildCompatibilityModes: no matching modes, falling back to L16+plain")
+            listOf(RaopCompatibilityMode("L16 + plain", useAlac = false, useEncryption = false, rsaPadding = "OAEP"))
         }
     }
 
@@ -427,38 +437,78 @@ class AudioCaptureService : Service() {
             }
 
             val currentProjection = mediaProjection ?: return false
-            val config = AudioPlaybackCaptureConfiguration.Builder(currentProjection)
-                .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
-                .addMatchingUsage(AudioAttributes.USAGE_GAME)
-                .addMatchingUsage(AudioAttributes.USAGE_UNKNOWN)
-                .build()
+            
+            // Try AudioPlaybackCapture first
+            try {
+                val config = AudioPlaybackCaptureConfiguration.Builder(currentProjection)
+                    .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
+                    .addMatchingUsage(AudioAttributes.USAGE_GAME)
+                    .addMatchingUsage(AudioAttributes.USAGE_UNKNOWN)
+                    .addMatchingUsage(AudioAttributes.USAGE_MUSIC)
+                    .addMatchingUsage(AudioAttributes.USAGE_ALARM)
+                    .addMatchingUsage(AudioAttributes.USAGE_NOTIFICATION)
+                    .addMatchingUsage(AudioAttributes.USAGE_RINGTONE)
+                    .addMatchingUsage(AudioAttributes.USAGE_SYSTEM)
+                    .build()
 
-            val audioFormat = AudioFormat.Builder()
-                .setEncoding(AUDIO_FORMAT)
-                .setSampleRate(SAMPLE_RATE)
-                .setChannelMask(AudioFormat.CHANNEL_IN_STEREO)
-                .build()
+                val audioFormat = AudioFormat.Builder()
+                    .setEncoding(AUDIO_FORMAT)
+                    .setSampleRate(SAMPLE_RATE)
+                    .setChannelMask(AudioFormat.CHANNEL_IN_STEREO)
+                    .build()
 
-            val bufferSize = maxOf(
-                AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_CONFIG, AUDIO_FORMAT),
-                BUFFER_SIZE * 4
-            )
+                val bufferSize = maxOf(
+                    AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_CONFIG, AUDIO_FORMAT),
+                    BUFFER_SIZE * 4
+                )
 
-            audioRecord = AudioRecord.Builder()
-                .setAudioPlaybackCaptureConfig(config)
-                .setAudioFormat(audioFormat)
-                .setBufferSizeInBytes(bufferSize)
-                .build()
+                audioRecord = AudioRecord.Builder()
+                    .setAudioPlaybackCaptureConfig(config)
+                    .setAudioFormat(audioFormat)
+                    .setBufferSizeInBytes(bufferSize)
+                    .build()
 
-            if (audioRecord?.state == AudioRecord.STATE_INITIALIZED) {
-                audioRecord?.startRecording()
-                LogServer.log("AudioRecord started recording (Project reused: ${mediaProjection != null})")
-                true
-            } else {
-                LogServer.log("AudioRecord initialization failed")
-                audioRecord?.release()
-                audioRecord = null
-                false
+                if (audioRecord?.state == AudioRecord.STATE_INITIALIZED) {
+                    audioRecord?.startRecording()
+                    LogServer.log("AudioRecord started recording with AudioPlaybackCapture")
+                    return true
+                } else {
+                    LogServer.log("AudioPlaybackCapture initialization failed, trying fallback")
+                    audioRecord?.release()
+                    audioRecord = null
+                }
+            } catch (e: Exception) {
+                LogServer.log("AudioPlaybackCapture failed: ${e.message}, trying fallback")
+            }
+
+            // Fallback: Try traditional AudioRecord (microphone input)
+            try {
+                val bufferSize = maxOf(
+                    AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_CONFIG, AUDIO_FORMAT),
+                    BUFFER_SIZE * 4
+                )
+
+                audioRecord = AudioRecord(
+                    AudioManager.STREAM_MUSIC,
+                    SAMPLE_RATE,
+                    CHANNEL_CONFIG,
+                    AUDIO_FORMAT,
+                    bufferSize
+                )
+
+                if (audioRecord?.state == AudioRecord.STATE_INITIALIZED) {
+                    audioRecord?.startRecording()
+                    LogServer.log("AudioRecord started recording with traditional microphone input")
+                    return true
+                } else {
+                    LogServer.log("Traditional AudioRecord initialization failed")
+                    audioRecord?.release()
+                    audioRecord = null
+                    return false
+                }
+            } catch (e: Exception) {
+                LogServer.log("Traditional AudioRecord setup error: ${e.message}")
+                return false
             }
         } catch (e: Exception) {
             LogServer.log("AudioRecord setup error: ${e.message}")
@@ -476,8 +526,22 @@ class AudioCaptureService : Service() {
                     val bytesRead = audioRecord?.read(buffer, 0, BUFFER_SIZE) ?: -1
                     if (bytesRead > 0) {
                         packetCount++
+                        
+                        // Debug: Log first few packets to verify audio data
+                        if (packetCount <= 5) {
+                            var sum = 0.0
+                            val samples = bytesRead / 2
+                            for (i in 0 until bytesRead step 2) {
+                                val sample = ((buffer[i+1].toInt() shl 8) or (buffer[i].toInt() and 0xFF)).toShort()
+                                sum += sample.toDouble() * sample.toDouble()
+                            }
+                            val rms = Math.sqrt(sum / samples).toInt()
+                            LogServer.log("CAPTURE: Pkt $packetCount, bytes=$bytesRead, RMS=$rms")
+                        }
+                        
                         raopClient?.streamAudio(buffer.copyOf(bytesRead))
                     } else if (bytesRead < 0) {
+                        LogServer.log("AudioRecord read error: $bytesRead")
                         break
                     } else {
                         Thread.sleep(10)
