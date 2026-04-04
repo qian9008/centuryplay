@@ -908,11 +908,6 @@ class RaopClient(
                         val mode = if (useAlacEncoding) "ALAC" else "L16"
                         val enc = if (useEncryption) "ENC" else "PLAIN"
                         LogServer.log("SND: Pkt $rtpSequence, RMS=$rms (Max 32767), Vol=${if (db == Long.MIN_VALUE) "-inf" else "${db}dB"}, Mode=$mode, Enc=$enc")
-                        
-                        // Debug: Log first few packets to verify audio data
-                        if (rtpSequence <= 5) {
-                            LogServer.log("RTP: Header=${rtpPacket.contentToString().take(16)}, PayloadSize=${encodedData.size}, TotalSize=${rtpPacket.size}")
-                        }
                     }
 
                     // Encode audio data
@@ -924,6 +919,11 @@ class RaopClient(
                         // Fallback: Convert PCM from little-endian to big-endian (network byte order)
                         // L16 format (RFC 3551) requires big-endian (network byte order)
                         swapEndianness(chunk)
+                    }
+                    
+                    // Debug: Log first few packets to verify audio data
+                    if (rtpSequence <= 5) {
+                        LogServer.log("RTP: Seq=$rtpSequence, EncodedSize=${encodedData.size}, ChunkSize=${chunk.size}")
                     }
                     
                     // Encrypt audio data with AES-128-CBC (only if encryption is enabled)
