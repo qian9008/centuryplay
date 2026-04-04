@@ -908,6 +908,11 @@ class RaopClient(
                         val mode = if (useAlacEncoding) "ALAC" else "L16"
                         val enc = if (useEncryption) "ENC" else "PLAIN"
                         LogServer.log("SND: Pkt $rtpSequence, RMS=$rms (Max 32767), Vol=${if (db == Long.MIN_VALUE) "-inf" else "${db}dB"}, Mode=$mode, Enc=$enc")
+                        
+                        // Debug: Log first few packets to verify audio data
+                        if (rtpSequence <= 5) {
+                            LogServer.log("RTP: Header=${rtpPacket.contentToString().take(16)}, PayloadSize=${encodedData.size}, TotalSize=${rtpPacket.size}")
+                        }
                     }
 
                     // Encode audio data
@@ -1416,9 +1421,10 @@ class RaopClient(
             // frameLength compatVer bitDepth riceMult riceInit riceLimit numCh maxRun maxFrameBytes(0=VBR) avgBR sampleRate
             sdpLines.add("a=fmtp:96 352 0 16 40 10 14 2 255 0 0 44100")
         } else {
+            // Standard AirPlay L16 format
             sdpLines.add("a=rtpmap:96 L16/44100/2")
-            sdpLines.add("a=fmtp:96 bitrate=1411200")
-            logD("L16 SDP: rtpmap:96 L16/44100/2, bitrate=1411200")
+            sdpLines.add("a=fmtp:96")
+            logD("L16 SDP: rtpmap:96 L16/44100/2 (standard AirPlay format)")
         }
 
         sdpLines.add("a=latency:$streamLatencySamples")
