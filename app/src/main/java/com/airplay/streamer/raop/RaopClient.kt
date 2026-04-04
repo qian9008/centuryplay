@@ -1417,6 +1417,8 @@ class RaopClient(
             sdpLines.add("a=fmtp:96 352 0 16 40 10 14 2 255 0 0 44100")
         } else {
             sdpLines.add("a=rtpmap:96 L16/44100/2")
+            sdpLines.add("a=fmtp:96 bitrate=1411200")
+            logD("L16 SDP: rtpmap:96 L16/44100/2, bitrate=1411200")
         }
 
         sdpLines.add("a=latency:$streamLatencySamples")
