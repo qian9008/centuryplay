@@ -400,6 +400,9 @@ class AudioCaptureService : Service() {
         val supportsPlain = encryptionSet.isEmpty() || encryptionSet.contains("0")
 
         val candidates = buildList<RaopCompatibilityMode> {
+            if (supportsAlac && supportsClassicRaopEncryption) {
+                add(RaopCompatibilityMode("ALAC + OAEP + AES", useAlac = true, useEncryption = true, rsaPadding = "OAEP"))
+            }
             // ── L16 优先（更通用，兼容性更好）──────────────────────────────
             if (supportsL16) {
                 if (supportsPlain) {

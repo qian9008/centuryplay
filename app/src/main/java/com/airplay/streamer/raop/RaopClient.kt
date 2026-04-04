@@ -674,7 +674,13 @@ class RaopClient(
         for (i in 0 until count) {
             val seq = (startSequence + i) and 0xFFFF
             val pkt = lookupRtpPacket(seq) ?: continue
-            val resendPacket = DatagramPacket(pkt, pkt.size, address, serverControlPort)
+            val wrapped = ByteArray(4 + pkt.size)
+            wrapped[0] = 0x80.toByte()
+            wrapped[1] = 0xD6.toByte()
+            wrapped[2] = (seq shr 8).toByte()
+            wrapped[3] = seq.toByte()
+            System.arraycopy(pkt, 0, wrapped, 4, pkt.size)
+            val resendPacket = DatagramPacket(wrapped, wrapped.size, address, serverControlPort)
             socket.send(resendPacket)
             resent++
         }
