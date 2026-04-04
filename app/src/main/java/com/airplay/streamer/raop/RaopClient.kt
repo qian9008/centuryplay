@@ -1429,7 +1429,6 @@ class RaopClient(
         } else {
             // Standard AirPlay L16 format
             sdpLines.add("a=rtpmap:96 L16/44100/2")
-            sdpLines.add("a=fmtp:96")
             logD("L16 SDP: rtpmap:96 L16/44100/2 (standard AirPlay format)")
         }
 
@@ -1568,6 +1567,11 @@ class RaopClient(
         }
 
         useAlacEncoding = forceAlacEncoding ?: detectedAlacEncoding
+        // Current AlacEncoder is not spec-complete. Force stable L16 path for shairport-sync compatibility.
+        if (useAlacEncoding) {
+            logD("ALAC mode requested but disabled due to encoder compatibility; falling back to L16")
+            useAlacEncoding = false
+        }
         useEncryption = forceEncryption ?: detectedEncryption
         currentRsaPaddingMode = when (rsaPaddingMode?.uppercase()) {
             RSA_PADDING_PKCS1 -> RSA_PADDING_PKCS1
