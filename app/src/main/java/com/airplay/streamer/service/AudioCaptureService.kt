@@ -444,11 +444,8 @@ class AudioCaptureService : Service() {
                     .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
                     .addMatchingUsage(AudioAttributes.USAGE_GAME)
                     .addMatchingUsage(AudioAttributes.USAGE_UNKNOWN)
-                    .addMatchingUsage(AudioAttributes.USAGE_MUSIC)
                     .addMatchingUsage(AudioAttributes.USAGE_ALARM)
                     .addMatchingUsage(AudioAttributes.USAGE_NOTIFICATION)
-                    .addMatchingUsage(AudioAttributes.USAGE_RINGTONE)
-                    .addMatchingUsage(AudioAttributes.USAGE_SYSTEM)
                     .build()
 
                 val audioFormat = AudioFormat.Builder()

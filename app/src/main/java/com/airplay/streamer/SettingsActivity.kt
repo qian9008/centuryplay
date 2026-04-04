@@ -24,6 +24,11 @@ class SettingsActivity : AppCompatActivity() {
         const val PREFS_NAME = "airplay_prefs"
         const val KEY_DEBUG_MODE = "debug_mode"
         const val KEY_MANUAL_HOST = "manual_host"
+        const val KEY_RAOP_PASSWORD = "raop_password"
+        const val KEY_TRANSPORT_MODE = "transport_mode"
+        const val TRANSPORT_AUTO = "auto"
+        const val TRANSPORT_TCP = "tcp"
+        const val TRANSPORT_UDP = "udp"
     }
 
     private lateinit var prefs: SharedPreferences

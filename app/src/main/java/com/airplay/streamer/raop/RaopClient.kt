@@ -71,6 +71,11 @@ class RaopClient(
     private var controlSocket: DatagramSocket? = null
     private var timingSocket: DatagramSocket? = null
 
+    data class SetupTransportVariant(
+        val label: String,
+        val transport: String
+    )
+
     // Helper to run the timing thread
     private var isTimingRunning = AtomicBoolean(false)
     // Helper to run the sync packet thread
