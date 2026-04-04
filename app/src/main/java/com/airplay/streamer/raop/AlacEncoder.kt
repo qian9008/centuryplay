@@ -41,26 +41,23 @@ class AlacEncoder {
     }
 
     private fun buildAlacHeader(numSamples: Int): ByteArray {
-        // ALAC uncompressed frame header (参考 Apple 官方规范和 shairport-sync)
-        // 未压缩 ALAC 帧格式：
-        //   byte 0: 0x00 (未压缩标志)
-        //   byte 1-4: 样本数 (big-endian, 352 for standard packets)
-        //   byte 5-8: 0x00000000 (reserved)
-        //   总共 9 字节头部 + PCM 数据
+        // 标准 AirPlay ALAC 头部格式 (参考 Apple 官方文档)
+        // 对于未压缩的 PCM 数据，使用简化的头部：
+        //   byte 0: 0x20 (标准帧标志)
+        //   总共 1 字节头部 + PCM 数据
+        // 这是 AirPlay 1 的标准格式
         
-        val buffer = ByteBuffer.allocate(9)
-        buffer.order(ByteOrder.BIG_ENDIAN)
-        
-        // 未压缩标志 (0 = 未压缩)
-        buffer.put(0x00.toByte())
-        
-        // 样本数 (352 for standard AirPlay packets)
-        buffer.putInt(numSamples)
-        
-        // 保留字段
-        buffer.putInt(0)
-        
-        return buffer.array()
+        return if (numSamples == 352) {
+            // 标准帧大小：1 字节头部
+            byteArrayOf(0x20.toByte())
+        } else {
+            // 非标准帧大小：5 字节头部
+            val buffer = ByteBuffer.allocate(5)
+            buffer.order(ByteOrder.BIG_ENDIAN)
+            buffer.put(0x00.toByte())
+            buffer.putInt(numSamples)
+            buffer.array()
+        }
     }
 
     private fun convertToBigEndian(pcmData: ByteArray): ByteArray {
