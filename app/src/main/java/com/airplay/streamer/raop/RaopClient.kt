@@ -41,8 +41,7 @@ class RaopClient(
     private val rtspPassword: String? = null,
     private val streamLatencyMsOverride: Long? = null,
     private val transportMode: String? = null  // "auto", "tcp", or "udp"
-)
-
+) {
     companion object {
         private const val TAG = "RaopClient"
         private const val USER_AGENT = "iTunes/4.6 (Macintosh; U; PPC Mac OS X 10.3)"
