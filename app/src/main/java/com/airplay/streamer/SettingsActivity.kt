@@ -135,6 +135,21 @@ class SettingsActivity : AppCompatActivity() {
         autoConnectSwitch.setOnCheckedChangeListener { _, isChecked ->
             prefs.edit().putBoolean("auto_connect", isChecked).apply()
         }
+
+        // Stream latency (visible in General section)
+        val latencyInput = findViewById<EditText>(R.id.streamLatencyInputGeneral)
+        val saveLatencyButton = findViewById<MaterialButton>(R.id.saveLatencyButton)
+        latencyInput.setText(prefs.getLong(KEY_STREAM_LATENCY_MS, 1100L).toString())
+        saveLatencyButton.setOnClickListener {
+            val text = latencyInput.text?.toString()?.trim().orEmpty()
+            val parsed = text.toLongOrNull()
+            if (parsed == null || parsed !in 250L..5000L) {
+                Toast.makeText(this, "Latency must be 250-5000 ms", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            prefs.edit().putLong(KEY_STREAM_LATENCY_MS, parsed).apply()
+            Toast.makeText(this, "Latency saved: ${parsed}ms", Toast.LENGTH_SHORT).show()
+        }
     }
 
     private fun setupDebugMode() {

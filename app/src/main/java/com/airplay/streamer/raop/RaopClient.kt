@@ -144,6 +144,8 @@ class RaopClient(
     private var digestChallenge: DigestChallenge? = null
     private var cachedAuthorizationHeader: String? = null
     private var digestNonceCount: Int = 0
+    private var lastVolumeSentDb: Float? = null
+    private var lastVolumeSentAtMs: Long = 0L
 
     private val retransmitCache = object : LinkedHashMap<Int, ByteArray>(RETRANSMIT_CACHE_SIZE, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Int, ByteArray>?): Boolean {
@@ -1001,6 +1003,14 @@ class RaopClient(
 
         // AirPlay volume is in dB, -144 (mute) to 0 (max)
         val dbVolume = if (volume <= 0f) -144f else (volume * 30f - 30f)
+        val now = System.currentTimeMillis()
+        val lastDb = lastVolumeSentDb
+        if (lastDb != null) {
+            val delta = kotlin.math.abs(dbVolume - lastDb)
+            if (delta < 0.8f && now - lastVolumeSentAtMs < 150L) {
+                return@withContext true
+            }
+        }
         val volumeStr = "volume: $dbVolume\r\n"
 
         val request = buildRtspRequest(
@@ -1013,7 +1023,12 @@ class RaopClient(
             sessionId = serverSessionId
         )
 
-        sendRtspRequest(request)?.first == 200
+        val ok = sendRtspRequest(request)?.first == 200
+        if (ok) {
+            lastVolumeSentDb = dbVolume
+            lastVolumeSentAtMs = now
+        }
+        ok
     }
 
     /**

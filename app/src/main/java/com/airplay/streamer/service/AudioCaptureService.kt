@@ -57,6 +57,7 @@ class AudioCaptureService : Service() {
         private const val FRAMES_PER_PACKET = 352
         private const val BYTES_PER_FRAME = 4 // 16-bit stereo = 4 bytes
         private const val BUFFER_SIZE = FRAMES_PER_PACKET * BYTES_PER_FRAME
+        private const val INITIAL_PACKET_DROP_COUNT = 12 // ~96ms warmup to avoid stale residual audio
 
         const val ACTION_START = "com.airplay.streamer.START"
         const val ACTION_STOP = "com.airplay.streamer.STOP"
@@ -523,11 +524,19 @@ class AudioCaptureService : Service() {
         captureJob = serviceScope.launch(Dispatchers.IO) {
             val buffer = ByteArray(BUFFER_SIZE)
             var packetCount = 0
+            var warmupDropRemaining = INITIAL_PACKET_DROP_COUNT
             
             try {
                 while (isActive && isCapturing) {
                     val bytesRead = audioRecord?.read(buffer, 0, BUFFER_SIZE) ?: -1
                     if (bytesRead > 0) {
+                        if (warmupDropRemaining > 0) {
+                            warmupDropRemaining--
+                            if (warmupDropRemaining == 0) {
+                                LogServer.log("CAPTURE: warmup complete, starting RTP send")
+                            }
+                            continue
+                        }
                         packetCount++
                         
                         // Debug: Log first few packets to verify audio data
