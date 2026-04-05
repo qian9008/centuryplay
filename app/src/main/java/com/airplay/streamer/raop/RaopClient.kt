@@ -269,8 +269,12 @@ class RaopClient(
         }
 
         val localIp = rtspSocket?.localAddress?.hostAddress ?: "0.0.0.0"
-        val sdp = buildSdp(localIp, rsaAesKey, aesIvBase64)
-
+        val rawSdp = buildSdp(localIp, rsaAesKey, aesIvBase64)
+        val sdp = normalizeSdpToL16(rawSdp)
+        val hasFmtp = Regex("(?m)^a=fmtp:").containsMatchIn(sdp)
+        val hasAppleLossless = sdp.contains("AppleLossless", ignoreCase = true)
+        val hasL16 = sdp.contains("a=rtpmap:96 L16/44100/2", ignoreCase = true)
+        logD("ANNOUNCE SDP check: has_fmtp=$hasFmtp has_applelossless=$hasAppleLossless has_l16=$hasL16")
         logD("SDP content:\n$sdp")
 
         // Generate Apple-Challenge for authentication
@@ -1445,6 +1449,29 @@ class RaopClient(
             }
         logD("Final SDP profile: ${filteredSdpLines.joinToString(" | ")}")
         return filteredSdpLines.joinToString("\r\n") + "\r\n"
+    }
+
+    private fun normalizeSdpToL16(sdp: String): String {
+        val normalized = sdp
+            .lineSequence()
+            .map {
+                val line = it.trimEnd('\r')
+                line
+            }
+            .filterNot { it.startsWith("a=fmtp:", ignoreCase = true) }
+            .map {
+                when {
+                    it.equals("a=rtpmap:96 AppleLossless", ignoreCase = true) -> "a=rtpmap:96 L16/44100/2"
+                    else -> it
+                }
+            }
+            .toMutableList()
+
+        val hasL16Rtpmap = normalized.any { it.equals("a=rtpmap:96 L16/44100/2", ignoreCase = true) }
+        if (!hasL16Rtpmap) {
+            normalized.add("a=rtpmap:96 L16/44100/2")
+        }
+        return normalized.joinToString("\r\n") + "\r\n"
     }
 
     private fun buildRtpPacket(data: ByteArray): ByteArray {
