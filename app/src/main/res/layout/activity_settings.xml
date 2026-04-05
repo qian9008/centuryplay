@@ -224,7 +224,7 @@
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:layout_marginTop="16dp"
-                        android:text="audio latency (ms)"
+                        android:text="stream latency (ms)"
                         android:textSize="16sp"
                         android:textColor="?attr/colorOnSurface"/>
 
@@ -232,7 +232,7 @@
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:layout_marginTop="4dp"
-                        android:text="lower is faster, higher is more stable"
+                        android:text="lower = less delay, but can increase crackles on unstable networks"
                         android:textSize="12sp"
                         android:textColor="?attr/colorOnSurfaceVariant"/>
 
@@ -358,6 +358,20 @@
                                 android:layout_height="wrap_content"
                                 android:hint="IP:port"
                                 android:inputType="text"/>
+                        </com.google.android.material.textfield.TextInputLayout>
+
+                        <com.google.android.material.textfield.TextInputLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="12dp"
+                            style="@style/Widget.Material3.TextInputLayout.OutlinedBox">
+
+                            <com.google.android.material.textfield.TextInputEditText
+                                android:id="@+id/streamLatencyInput"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:hint="stream latency (ms, 250-5000)"
+                                android:inputType="number"/>
                         </com.google.android.material.textfield.TextInputLayout>
 
                         <com.google.android.material.button.MaterialButton
