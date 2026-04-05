@@ -44,12 +44,12 @@ android {
 
     lint {
         // Disable all lint checks for clean development experience
-        abortOnError false
-        checkReleaseBuilds false
+        abortOnError = false
+        checkReleaseBuilds = false
         // Use baseline to suppress all existing issues
         baseline = file("lint-baseline.xml")
         // Disable most common lint issues
-        disable.addAll([
+        disable.addAll(listOf(
             "MissingPermission",
             "HardcodedText",
             "MissingTranslation",
@@ -121,7 +121,7 @@ android {
             "IconLocation",
             "MergeRootFrame",
             "UnlocalizedSms"
-        ])
+        ))
     }
 }
 
