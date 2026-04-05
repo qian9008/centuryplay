@@ -144,6 +144,7 @@ class RaopClient(
     private var digestChallenge: DigestChallenge? = null
     private var cachedAuthorizationHeader: String? = null
     private var digestNonceCount: Int = 0
+    private var lastAnnounceStatusCode: Int? = null
     private var lastVolumeSentDb: Float? = null
     private var lastVolumeSentAtMs: Long = 0L
 
@@ -193,9 +194,13 @@ class RaopClient(
             rtspSocket?.soTimeout = 10000
             logD("Starting ANNOUNCE...")
             if (!announce()) {
-                logE("ANNOUNCE failed")
-                disconnect()
-                return@withContext false
+                val status = lastAnnounceStatusCode
+                logE("ANNOUNCE failed (code=${status ?: "null"}), trying recovery retry")
+                val recovered = recoverAndRetryAnnounce()
+                if (!recovered) {
+                    disconnect()
+                    return@withContext false
+                }
             }
             logD("ANNOUNCE succeeded")
 
@@ -298,8 +303,27 @@ class RaopClient(
         logD("ANNOUNCE request [${modeLabel ?: "<default>"}]:\n$request")
 
         val response = sendRtspRequest(request)
+        lastAnnounceStatusCode = response?.first
         logD("ANNOUNCE response [${modeLabel ?: "<default>"}]: code=${response?.first}, headers=${response?.second}")
         return response?.first == 200
+    }
+
+    private fun recoverAndRetryAnnounce(): Boolean {
+        return try {
+            // 453-like temporary refusal often clears after a short settle window.
+            options()
+            Thread.sleep(900)
+            announce().also { ok ->
+                if (!ok) {
+                    logE("ANNOUNCE recovery retry failed (code=${lastAnnounceStatusCode ?: "null"})")
+                } else {
+                    logD("ANNOUNCE recovery retry succeeded")
+                }
+            }
+        } catch (e: Exception) {
+            logE("ANNOUNCE recovery retry error: ${e.message}")
+            false
+        }
     }
 
 

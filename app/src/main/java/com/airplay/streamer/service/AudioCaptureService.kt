@@ -58,6 +58,7 @@ class AudioCaptureService : Service() {
         private const val BYTES_PER_FRAME = 4 // 16-bit stereo = 4 bytes
         private const val BUFFER_SIZE = FRAMES_PER_PACKET * BYTES_PER_FRAME
         private const val INITIAL_PACKET_DROP_COUNT = 12 // ~96ms warmup to avoid stale residual audio
+        private const val CAPTURE_DRAIN_MS = 180L
 
         const val ACTION_START = "com.airplay.streamer.START"
         const val ACTION_STOP = "com.airplay.streamer.STOP"
@@ -485,6 +486,7 @@ class AudioCaptureService : Service() {
 
                 if (audioRecord?.state == AudioRecord.STATE_INITIALIZED) {
                     audioRecord?.startRecording()
+                    drainInitialCaptureBuffer(audioRecord)
                     LogServer.log("AudioRecord started recording with AudioPlaybackCapture")
                     return true
                 } else {
@@ -513,6 +515,7 @@ class AudioCaptureService : Service() {
 
                 if (audioRecord?.state == AudioRecord.STATE_INITIALIZED) {
                     audioRecord?.startRecording()
+                    drainInitialCaptureBuffer(audioRecord)
                     LogServer.log("AudioRecord started recording with traditional microphone input")
                     return true
                 } else {
@@ -528,6 +531,26 @@ class AudioCaptureService : Service() {
         } catch (e: Exception) {
             LogServer.log("AudioRecord setup error: ${e.message}")
             false
+        }
+    }
+
+    private fun drainInitialCaptureBuffer(record: AudioRecord?) {
+        if (record == null) return
+        try {
+            val tmp = ByteArray(BUFFER_SIZE)
+            val endAt = System.currentTimeMillis() + CAPTURE_DRAIN_MS
+            var drainedBytes = 0
+            while (System.currentTimeMillis() < endAt) {
+                val read = record.read(tmp, 0, tmp.size, AudioRecord.READ_NON_BLOCKING)
+                if (read <= 0) {
+                    Thread.sleep(5)
+                    continue
+                }
+                drainedBytes += read
+            }
+            LogServer.log("CAPTURE: drained stale buffer ${drainedBytes}B over ${CAPTURE_DRAIN_MS}ms")
+        } catch (e: Exception) {
+            LogServer.log("CAPTURE: drain skipped (${e.message})")
         }
     }
 
