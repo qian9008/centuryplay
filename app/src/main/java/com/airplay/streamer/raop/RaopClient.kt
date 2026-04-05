@@ -85,6 +85,8 @@ class RaopClient(
     private var isHealthMonitorRunning = AtomicBoolean(false)
     // Helper to run RTSP keepalive
     private var isKeepAliveRunning = AtomicBoolean(false)
+    private var keepAliveThread: Thread? = null
+    private var healthMonitorThread: Thread? = null
     private var syncSequence = 0
     
     private val HEALTH_CHECK_INTERVAL_MS = 3000L  // Check every 3 seconds
@@ -697,7 +699,7 @@ class RaopClient(
     private fun startKeepAlive() {
         if (isKeepAliveRunning.get()) return
         isKeepAliveRunning.set(true)
-        Thread {
+        keepAliveThread = Thread {
             try {
                 while (isKeepAliveRunning.get() && isConnected.get()) {
                     Thread.sleep(2000)
@@ -717,11 +719,20 @@ class RaopClient(
                 }
             }
             logD("Keepalive thread finished")
-        }.start()
+        }.apply {
+            name = "RaopKeepAlive-$localSessionId"
+            start()
+        }
     }
 
     private fun stopKeepAlive() {
         isKeepAliveRunning.set(false)
+        val t = keepAliveThread
+        if (t != null && t != Thread.currentThread()) {
+            t.interrupt()
+            try { t.join(300) } catch (_: Exception) {}
+        }
+        keepAliveThread = null
     }
     
     /**
@@ -740,7 +751,7 @@ class RaopClient(
         logD("Starting connection health monitor thread")
         isHealthMonitorRunning.set(true)
         
-        Thread {
+        healthMonitorThread = Thread {
             logD("Health monitor thread started")
             try {
                 while (isHealthMonitorRunning.get() && isConnected.get()) {
@@ -778,11 +789,20 @@ class RaopClient(
                 }
             }
             logD("Health monitor finished")
-        }.start()
+        }.apply {
+            name = "RaopHealth-$localSessionId"
+            start()
+        }
     }
     
     private fun stopHealthMonitor() {
         isHealthMonitorRunning.set(false)
+        val t = healthMonitorThread
+        if (t != null && t != Thread.currentThread()) {
+            t.interrupt()
+            try { t.join(300) } catch (_: Exception) {}
+        }
+        healthMonitorThread = null
     }
     
     /**

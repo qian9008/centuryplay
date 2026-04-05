@@ -259,10 +259,13 @@ class AudioCaptureService : Service() {
             try {
                 raopClient?.disconnect()
             } catch (_: Exception) {}
+            // Give receiver a brief window to retire old RTSP session before next ANNOUNCE.
+            delay(350)
             
             // Read transport mode preference
             val prefs = getSharedPreferences(SettingsActivity.PREFS_NAME, MODE_PRIVATE)
             val transportMode = prefs.getString(SettingsActivity.KEY_TRANSPORT_MODE, SettingsActivity.TRANSPORT_AUTO)
+            val streamLatencyMs = prefs.getLong(SettingsActivity.KEY_STREAM_LATENCY_MS, 1100L)
             
             raopClient = RaopClient(
                 host = host,
@@ -274,6 +277,7 @@ class AudioCaptureService : Service() {
                 forceEncryption = mode.useEncryption,
                 rsaPaddingMode = mode.rsaPadding,
                 modeLabel = mode.label,
+                streamLatencyMsOverride = streamLatencyMs,
                 transportMode = transportMode
             )
 
