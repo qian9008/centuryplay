@@ -96,6 +96,7 @@ class RaopClient(
     private var sessionId: String? = null
     private var serverSessionId: String? = null
     private var localSessionId: String = Random.nextLong(0, Long.MAX_VALUE).toString()
+    private var appleSessionId: String = generateSessionId()
     private var serverPort: Int = 0
     private var serverControlPort: Int = 0  // Server's control port for sync packets
     private var serverTimingPort: Int = 0   // Server's timing port
@@ -303,7 +304,7 @@ class RaopClient(
                 "Content-Type" to "application/sdp",
                 "Content-Length" to sdp.toByteArray().size.toString(),
                 "Apple-Challenge" to challenge,
-                "X-Apple-Session-ID" to (serverSessionId ?: generateSessionId())
+                "X-Apple-Session-ID" to appleSessionId
             ),
             sdp
         )
@@ -354,6 +355,7 @@ class RaopClient(
             try { rtspSocket?.close() } catch (_: Exception) {}
 
             localSessionId = generateSessionId()
+            appleSessionId = generateSessionId()
             cSeq.set(0)
             serverSessionId = null
             sessionId = null
@@ -1220,6 +1222,7 @@ class RaopClient(
         // Reconnect must use a fresh RTSP URL/session identity, otherwise some receivers
         // may keep the old session and reject the next ANNOUNCE/SETUP with 453-like errors.
         localSessionId = generateSessionId()
+        appleSessionId = generateSessionId()
         cSeq.set(0)
         sessionId = null
         serverSessionId = null
