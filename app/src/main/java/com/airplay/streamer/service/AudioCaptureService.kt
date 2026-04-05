@@ -57,6 +57,8 @@ class AudioCaptureService : Service() {
         const val EXTRA_HOST = "host"
         const val EXTRA_PORT = "port"
         const val EXTRA_DEVICE_NAME = "device_name"
+        const val EXTRA_CODEC_CAPABILITIES = "codec_capabilities"
+        const val EXTRA_ENCRYPTION_CAPABILITIES = "encryption_capabilities"
 
         // Singleton for accessing streaming state
         var instance: AudioCaptureService? = null
