@@ -90,7 +90,7 @@ class RaopClient(
     private var healthMonitorThread: Thread? = null
     private var syncSequence = 0
     
-    private val HEALTH_CHECK_INTERVAL_MS = 3000L  // Check every 3 seconds
+    private val HEALTH_CHECK_INTERVAL_MS = 10000L  // Less intrusive health checks
 
     private val cSeq = AtomicInteger(0)
     private var sessionId: String? = null
@@ -147,6 +147,7 @@ class RaopClient(
     private var cachedAuthorizationHeader: String? = null
     private var digestNonceCount: Int = 0
     private var lastAnnounceStatusCode: Int? = null
+    private var lastRtspFailureCode: Int? = null
     private var lastVolumeSentDb: Float? = null
     private var lastVolumeSentAtMs: Long = 0L
 
@@ -197,9 +198,11 @@ class RaopClient(
             logD("Starting ANNOUNCE...")
             if (!announce()) {
                 val status = lastAnnounceStatusCode
+                lastRtspFailureCode = status
                 logE("ANNOUNCE failed (code=${status ?: "null"}), trying recovery retry")
                 val recovered = recoverAndRetryAnnounce()
                 if (!recovered) {
+                    lastRtspFailureCode = lastAnnounceStatusCode ?: status
                     disconnect()
                     return@withContext false
                 }
@@ -209,6 +212,7 @@ class RaopClient(
             logD("Starting SETUP...")
             if (!setup()) {
                 logE("SETUP failed")
+                lastRtspFailureCode = 0
                 disconnect()
                 return@withContext false
             }
@@ -217,6 +221,7 @@ class RaopClient(
             logD("Starting RECORD...")
             if (!record()) {
                 logE("RECORD failed")
+                lastRtspFailureCode = 0
                 disconnect()
                 return@withContext false
             }
@@ -327,8 +332,10 @@ class RaopClient(
             Thread.sleep(1200)
             announce().also { ok ->
                 if (!ok) {
+                    lastRtspFailureCode = lastAnnounceStatusCode
                     logE("ANNOUNCE recovery retry failed (code=${lastAnnounceStatusCode ?: "null"})")
                 } else {
+                    lastRtspFailureCode = null
                     logD("ANNOUNCE recovery retry succeeded")
                 }
             }
@@ -337,6 +344,8 @@ class RaopClient(
             false
         }
     }
+
+    fun getLastRtspFailureCode(): Int? = lastRtspFailureCode
 
     private fun reopenRtspControlConnection(): Boolean {
         return try {
@@ -767,7 +776,7 @@ class RaopClient(
         keepAliveThread = Thread {
             try {
                 while (isKeepAliveRunning.get() && isConnected.get()) {
-                    Thread.sleep(2000)
+                    Thread.sleep(10000)
                     if (!isKeepAliveRunning.get() || !isConnected.get()) break
                     val request = buildRtspRequest("OPTIONS")
                     val response = sendRtspRequest(request)
@@ -824,26 +833,16 @@ class RaopClient(
                     
                     if (!isHealthMonitorRunning.get() || !isConnected.get()) break
                     
-                    // Check if TCP socket is still valid
+                    // Check if TCP socket is still valid without intrusive urgent-data probing.
                     val currentSocket = rtspSocket
                     if (currentSocket == null || currentSocket.isClosed || !currentSocket.isConnected) {
                         logE("Health check: RTSP socket is closed/disconnected")
                         handleServerDisconnect()
                         break
                     }
-                    
-                    logD("Health check: socket alive")
-                    
-                    try {
-                        currentSocket.sendUrgentData(0xFF)
-                        if (currentSocket.isInputShutdown || currentSocket.isOutputShutdown) {
-                            logE("Health check: RTSP socket input/output is shutdown")
-                            handleServerDisconnect()
-                            break
-                        }
-                        logD("Health check: socket OK")
-                    } catch (e: java.io.IOException) {
-                        logE("Health check: RTSP socket probe failed - ${e.message}")
+
+                    if (currentSocket.isInputShutdown || currentSocket.isOutputShutdown) {
+                        logE("Health check: RTSP socket input/output is shutdown")
                         handleServerDisconnect()
                         break
                     }
@@ -992,7 +991,7 @@ class RaopClient(
                     
                     // Debug Logging: Calculate RMS periodically
                     debugPacketCount++
-                    if (debugPacketCount % 50 == 0 || debugPacketCount <= 5) {
+                    if (debugPacketCount % 500 == 0 || debugPacketCount <= 3) {
                         var sum = 0.0
                         val samples = chunk.size / 2 // 16-bit samples
                         for (i in 0 until chunk.size step 2) {
