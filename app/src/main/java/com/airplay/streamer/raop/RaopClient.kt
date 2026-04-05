@@ -944,7 +944,9 @@ class RaopClient(
                     }
 
                     // Force L16 payload for compatibility; ALAC branch is intentionally disabled.
-                    LogServer.log("ENCODING: Using L16 (big-endian PCM)")
+                    if (debugPacketCount <= 3 || debugPacketCount % 500 == 0) {
+                        LogServer.log("ENCODING: Using L16 (big-endian PCM)")
+                    }
                     val encodedData = swapEndianness(chunk)
                     
                     // Debug: Log first few packets to verify audio data
@@ -1059,8 +1061,10 @@ class RaopClient(
         // Give threads a moment to notice the flags
         try { Thread.sleep(100) } catch (_: Exception) {}
         
-        // Send FLUSH + TEARDOWN if we were connected (with timeout)
-        if (wasConnected) {
+        // Send FLUSH + TEARDOWN whenever we might have opened an RTSP session,
+        // even if RECORD didn't complete yet.
+        val shouldSendTeardown = wasConnected || serverSessionId != null || rtspSocket?.isConnected == true
+        if (shouldSendTeardown) {
             try {
                 logD("Sending FLUSH request...")
                 rtspSocket?.soTimeout = 2000

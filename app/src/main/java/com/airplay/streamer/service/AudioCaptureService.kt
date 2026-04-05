@@ -82,6 +82,7 @@ class AudioCaptureService : Service() {
     private var raopClient: RaopClient? = null
     private var captureJob: Job? = null
     private var connectionJob: Job? = null
+    private var teardownJob: Job? = null
 
     private var isCapturing = false
     private var deviceName: String = "AirPlay Speaker"
@@ -226,6 +227,7 @@ class AudioCaptureService : Service() {
                     android.os.Handler(android.os.Looper.getMainLooper()).post {
                         onStateChanged?.invoke(true)
                     }
+                    sendInitialSilencePackets()
                     LogServer.log("Audio capture started, beginning stream loop")
                     startAudioStreamLoop()
                 } else {
@@ -246,6 +248,7 @@ class AudioCaptureService : Service() {
         codecCapabilities: String?,
         encryptionCapabilities: String?
     ): Boolean {
+        teardownJob?.join()
         val modes = buildCompatibilityModes(codecCapabilities, encryptionCapabilities)
         val maxAttemptsPerMode = 3
 
@@ -384,6 +387,7 @@ class AudioCaptureService : Service() {
                     android.os.Handler(android.os.Looper.getMainLooper()).post {
                         onStateChanged?.invoke(true)
                     }
+                    sendInitialSilencePackets()
                     LogServer.log("Audio capture restarted after compatibility fallback")
                     startAudioStreamLoop()
                 } else {
@@ -572,6 +576,17 @@ class AudioCaptureService : Service() {
         }
     }
 
+    private suspend fun sendInitialSilencePackets(count: Int = 8) {
+        val silence = ByteArray(BUFFER_SIZE)
+        repeat(count) {
+            if (!serviceScope.isActive || !isCapturing) return
+            try {
+                raopClient?.streamAudio(silence)
+            } catch (_: Exception) {}
+        }
+        LogServer.log("Sent $count initial silence packets")
+    }
+
     private fun stopCapture(stopProjection: Boolean) {
         isCapturing = false
         
@@ -596,7 +611,8 @@ class AudioCaptureService : Service() {
         val clientToDisconnect = raopClient
         raopClient = null
 
-        serviceScope.launch(Dispatchers.IO) {
+        teardownJob?.cancel()
+        teardownJob = serviceScope.launch(Dispatchers.IO) {
             try {
                 // VERY IMPORTANT to prevent native crash: wait for thread to unblock before calling release
                 recordToRelease?.stop()
