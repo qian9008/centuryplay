@@ -80,7 +80,7 @@ object LogServer {
             // Read request (we don't care about the content)
             client.getInputStream().bufferedReader().readLine()
             
-            // Send HTML response with auto-refresh
+            // Send HTML response
             val html = buildHtml()
             writer.print("HTTP/1.1 200 OK\r\n")
             writer.print("Content-Type: text/html; charset=utf-8\r\n")
@@ -105,7 +105,7 @@ object LogServer {
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta http-equiv="refresh" content="2">
+    <!-- auto-refresh disabled -->
     <title>centuryplay logs</title>
     <style>
         body { 
@@ -133,7 +133,7 @@ object LogServer {
     </style>
 </head>
 <body>
-    <h1>🔊 centuryplay logs (auto-refresh 2s)</h1>
+    <h1>centuryplay logs (manual refresh)</h1>
     <pre>$logContent</pre>
 </body>
 </html>
@@ -154,3 +154,4 @@ object LogServer {
             }
     }
 }
+

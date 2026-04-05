@@ -30,7 +30,8 @@ import kotlin.random.Random
 class RaopClient(
     private val host: String,
     private val port: Int,
-    private val streamLatencyMsOverride: Long? = null
+    private val streamLatencyMsOverride: Long? = null,
+    private val forceEncryption: Boolean = false
 ) {
     companion object {
         private const val TAG = "RaopClient"
@@ -206,14 +207,22 @@ class RaopClient(
      * ANNOUNCE - Describe the audio format to the server
      */
     private fun announce(): Boolean {
-        // Generate encryption keys
-        generateKeys()
-        val rsaAesKey = encryptRsaAesKey()
-        if (rsaAesKey == null) {
-            logE("Failed to encrypt AES key")
-            return false
+        val rsaAesKey: String?
+        val aesIvBase64: String?
+        if (useEncryption) {
+            // Generate encryption keys only when encrypted transport is enabled.
+            generateKeys()
+            rsaAesKey = encryptRsaAesKey()
+            if (rsaAesKey == null) {
+                logE("Failed to encrypt AES key")
+                return false
+            }
+            aesIvBase64 = Base64.getEncoder().encodeToString(aesIv)
+        } else {
+            rsaAesKey = null
+            aesIvBase64 = null
+            logD("Using plain (unencrypted) mode for ANNOUNCE")
         }
-        val aesIvBase64 = Base64.getEncoder().encodeToString(aesIv)
 
         val localIp = rtspSocket?.localAddress?.hostAddress ?: "0.0.0.0"
         val sdp = buildSdp(localIp, rsaAesKey, aesIvBase64)
@@ -1003,11 +1012,10 @@ class RaopClient(
         }
     }
 
-    // Encryption is required for proper AirPlay compatibility
-    // When true, audio is encrypted with AES-128-CBC and keys are exchanged via RSA
-    private var useEncryption = true
+    // Plain mode is default for broader compatibility; can be overridden to encrypted mode.
+    private var useEncryption = forceEncryption
     
-    private fun buildSdp(localIp: String, rsaAesKey: String, aesIv: String): String {
+    private fun buildSdp(localIp: String, rsaAesKey: String?, aesIv: String?): String {
         val baseSdp = """
 v=0
 o=iTunes $localSessionId 0 IN IP4 $localIp
@@ -1018,7 +1026,7 @@ m=audio 0 RTP/AVP 96
 a=rtpmap:96 L16/44100/2"""
         
         // Only include encryption parameters if encryption is enabled
-        return if (useEncryption) {
+        return if (useEncryption && rsaAesKey != null && aesIv != null) {
             """
 $baseSdp
 a=rsaaeskey:$rsaAesKey

@@ -42,9 +42,14 @@ class MainActivity : AppCompatActivity() {
     private val mediaProjectionLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
-        if (result.resultCode == Activity.RESULT_OK && result.data != null) {
-            pendingDevice?.let { device ->
-                startStreamingService(result.resultCode, result.data!!, device)
+        if (result.resultCode == Activity.RESULT_OK) {
+            val data = result.data
+            if (data != null) {
+                pendingDevice?.let { device ->
+                    startStreamingService(result.resultCode, data, device)
+                }
+            } else {
+                Toast.makeText(this, "Permission data missing", Toast.LENGTH_SHORT).show()
             }
         } else {
             Toast.makeText(this, "Permission denied", Toast.LENGTH_SHORT).show()
@@ -64,6 +69,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+            getSharedPreferences(SettingsActivity.PREFS_NAME, MODE_PRIVATE).edit().putString("last_crash", throwable.stackTraceToString()).commit()
+            defaultHandler?.uncaughtException(thread, throwable)
+        }
+
         // Apply Material You dynamic colors (Android 12+)
         DynamicColors.applyToActivityIfAvailable(this)
         
@@ -71,6 +82,13 @@ class MainActivity : AppCompatActivity() {
         
         // Enable edge-to-edge display
         enableEdgeToEdge()
+
+        val prefs = getSharedPreferences(SettingsActivity.PREFS_NAME, MODE_PRIVATE)
+        val lastCrash = prefs.getString("last_crash", null)
+        if (lastCrash != null) {
+            prefs.edit().remove("last_crash").commit()
+            com.google.android.material.dialog.MaterialAlertDialogBuilder(this).setTitle("Crash Log").setMessage(lastCrash).setPositiveButton("OK", null).show()
+        }
         
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
@@ -148,19 +166,24 @@ class MainActivity : AppCompatActivity() {
 
     private fun setupRecyclerView() {
         speakerAdapter = SpeakerAdapter { device ->
-            // Check if currently streaming
-            val isStreaming = AudioCaptureService.instance?.isCurrentlyStreaming() == true
-            val currentDevice = viewModel.uiState.value.selectedDevice
-            
-            if (isStreaming && currentDevice != null) {
-                // If tapping the same speaker that's playing, do nothing
-                if (currentDevice.host == device.host && currentDevice.port == device.port) {
-                    return@SpeakerAdapter
+            runCatching {
+                // Check if currently streaming
+                val isStreaming = AudioCaptureService.instance?.isCurrentlyStreaming() == true
+                val currentDevice = viewModel.uiState.value.selectedDevice
+
+                if (isStreaming && currentDevice != null) {
+                    // If tapping the same speaker that's playing, do nothing
+                    if (currentDevice.host == device.host && currentDevice.port == device.port) {
+                        return@SpeakerAdapter
+                    }
+                    // Show confirmation dialog for switching to different speaker
+                    showSwitchSpeakerDialog(device)
+                } else {
+                    viewModel.selectDevice(device)
                 }
-                // Show confirmation dialog for switching to different speaker
-                showSwitchSpeakerDialog(device)
-            } else {
-                viewModel.selectDevice(device)
+            }.onFailure { e ->
+                LogServer.log("UI click error: ${e.message}")
+                Toast.makeText(this, "UI error: ${e.message}", Toast.LENGTH_SHORT).show()
             }
         }
 
@@ -168,7 +191,7 @@ class MainActivity : AppCompatActivity() {
             layoutManager = LinearLayoutManager(this@MainActivity)
             adapter = speakerAdapter
             // Enable default animations for entry/exit effects
-            itemAnimator = androidx.recyclerview.widget.DefaultItemAnimator()
+            itemAnimator = null // Disabled to prevent crash on rapid tap
         }
     }
     
@@ -216,11 +239,16 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, "Refreshing...", Toast.LENGTH_SHORT).show()
         }
 
+        val volumeDebounceHandler = android.os.Handler(mainLooper)
+        var pendingVolume = binding.volumeSlider.getValue()
+        val applyVolumeRunnable = Runnable {
+            AudioCaptureService.instance?.setVolume(pendingVolume)
+        }
         binding.volumeSlider.addOnChangeListener { value, fromUser ->
-            if (fromUser) {
-                // WavySlider already uses 0.0-1.0 range
-                AudioCaptureService.instance?.setVolume(value)
-            }
+            if (!fromUser) return@addOnChangeListener
+            pendingVolume = value
+            volumeDebounceHandler.removeCallbacks(applyVolumeRunnable)
+            volumeDebounceHandler.postDelayed(applyVolumeRunnable, 120L)
         }
         
         // Set initial volume to 80%
@@ -334,10 +362,12 @@ class MainActivity : AppCompatActivity() {
                 duration = 450
                 interpolator = android.view.animation.OvershootInterpolator(2.0f)
             }
-            androidx.transition.TransitionManager.beginDelayedTransition(
-                binding.mainContent,
-                transition
-            )
+            runCatching {
+                androidx.transition.TransitionManager.beginDelayedTransition(
+                    binding.mainContent,
+                    transition
+                )
+            }
             
             // Show volume layout
             binding.volumeLayout.visibility = View.VISIBLE
@@ -385,10 +415,12 @@ class MainActivity : AppCompatActivity() {
                 duration = 350
                 interpolator = android.view.animation.OvershootInterpolator(1.5f)
             }
-            androidx.transition.TransitionManager.beginDelayedTransition(
-                binding.mainContent,
-                transition
-            )
+            runCatching {
+                androidx.transition.TransitionManager.beginDelayedTransition(
+                    binding.mainContent,
+                    transition
+                )
+            }
             
             // Hide volume layout
             binding.volumeLayout.visibility = View.GONE
@@ -438,6 +470,8 @@ class MainActivity : AppCompatActivity() {
             putExtra(AudioCaptureService.EXTRA_HOST, device.host)
             putExtra(AudioCaptureService.EXTRA_PORT, device.port)
             putExtra(AudioCaptureService.EXTRA_DEVICE_NAME, device.displayName)
+            putExtra(AudioCaptureService.EXTRA_CODEC_CAPABILITIES, device.features["cn"])
+            putExtra(AudioCaptureService.EXTRA_ENCRYPTION_CAPABILITIES, device.features["et"])
         }
         
         // Save Last Device for Auto-Connect
@@ -446,7 +480,16 @@ class MainActivity : AppCompatActivity() {
             .putInt("last_device_port", device.port)
             .apply()
 
-        startForegroundService(serviceIntent)
+        try {
+            startForegroundService(serviceIntent)
+        } catch (e: Exception) {
+            try {
+                startService(serviceIntent)
+            } catch (e2: Exception) {
+                Toast.makeText(this, "Failed to start service: " + e.message, Toast.LENGTH_SHORT).show()
+                return
+            }
+        }
         
         // Update UI immediately to show streaming state
         viewModel.setStreamingState(true)
@@ -481,3 +524,5 @@ class MainActivity : AppCompatActivity() {
         AudioCaptureService.instance?.onStateChanged = null
     }
 }
+
+

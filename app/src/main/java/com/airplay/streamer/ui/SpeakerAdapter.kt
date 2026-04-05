@@ -62,6 +62,7 @@ class SpeakerAdapter(
             
             // Make entire card clickable
             itemView.setOnClickListener {
+                if (bindingAdapterPosition == RecyclerView.NO_POSITION) return@setOnClickListener
                 onConnectClick(item.device)
             }
         }
