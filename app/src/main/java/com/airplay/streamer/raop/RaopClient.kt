@@ -310,9 +310,19 @@ class RaopClient(
 
     private fun recoverAndRetryAnnounce(): Boolean {
         return try {
-            // 453-like temporary refusal often clears after a short settle window.
-            options()
-            Thread.sleep(900)
+            // 453-like temporary refusal often means the receiver still associates
+            // the previous RTSP TCP session/url. Reopen the socket and retry on a fresh session URL.
+            val code = lastAnnounceStatusCode
+            if (code == 453) {
+                logD("ANNOUNCE recovery: status=453, reopening RTSP socket with fresh local session")
+                if (!reopenRtspControlConnection()) {
+                    logE("ANNOUNCE recovery: failed to reopen RTSP control connection")
+                    return false
+                }
+            } else {
+                options()
+            }
+            Thread.sleep(1200)
             announce().also { ok ->
                 if (!ok) {
                     logE("ANNOUNCE recovery retry failed (code=${lastAnnounceStatusCode ?: "null"})")
@@ -322,6 +332,33 @@ class RaopClient(
             }
         } catch (e: Exception) {
             logE("ANNOUNCE recovery retry error: ${e.message}")
+            false
+        }
+    }
+
+    private fun reopenRtspControlConnection(): Boolean {
+        return try {
+            try { rtspWriter?.close() } catch (_: Exception) {}
+            try { rtspReader?.close() } catch (_: Exception) {}
+            try { rtspSocket?.close() } catch (_: Exception) {}
+
+            localSessionId = generateSessionId()
+            cSeq.set(0)
+            serverSessionId = null
+            sessionId = null
+            digestChallenge = null
+            cachedAuthorizationHeader = null
+            digestNonceCount = 0
+
+            rtspSocket = Socket(host, port).apply {
+                soTimeout = 10000
+            }
+            rtspReader = BufferedReader(InputStreamReader(rtspSocket!!.getInputStream()))
+            rtspWriter = PrintWriter(OutputStreamWriter(rtspSocket!!.getOutputStream()), true)
+            logD("RTSP socket reopened, localSessionId=$localSessionId")
+            true
+        } catch (e: Exception) {
+            logE("Failed to reopen RTSP socket: ${e.message}")
             false
         }
     }
