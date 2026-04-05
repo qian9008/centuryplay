@@ -916,16 +916,9 @@ class RaopClient(
                         LogServer.log("SND: Pkt $rtpSequence, RMS=$rms (Max 32767), Vol=${if (db == Long.MIN_VALUE) "-inf" else "${db}dB"}, Mode=$mode, Enc=$enc")
                     }
 
-                    // Encode audio data
-                    val encodedData = if (useAlacEncoding) {
-                        LogServer.log("ENCODING: Using ALAC encoder")
-                        alacEncoder.encode(chunk)
-                    } else {
-                        LogServer.log("ENCODING: Using L16 (big-endian PCM)")
-                        // Fallback: Convert PCM from little-endian to big-endian (network byte order)
-                        // L16 format (RFC 3551) requires big-endian (network byte order)
-                        swapEndianness(chunk)
-                    }
+                    // Force L16 payload for compatibility; ALAC branch is intentionally disabled.
+                    LogServer.log("ENCODING: Using L16 (big-endian PCM)")
+                    val encodedData = swapEndianness(chunk)
                     
                     // Debug: Log first few packets to verify audio data
                     if (rtpSequence <= 5) {
@@ -1441,7 +1434,17 @@ class RaopClient(
             logD("ENCRYPTION DISABLED - streaming unencrypted ${if (useAlacEncoding) "ALAC" else "L16"} audio")
         }
 
-        return sdpLines.joinToString("\r\n") + "\r\n"
+        val filteredSdpLines = sdpLines
+            .filterNot { it.startsWith("a=fmtp:", ignoreCase = true) }
+            .map {
+                if (it.equals("a=rtpmap:96 AppleLossless", ignoreCase = true)) {
+                    "a=rtpmap:96 L16/44100/2"
+                } else {
+                    it
+                }
+            }
+        logD("Final SDP profile: ${filteredSdpLines.joinToString(" | ")}")
+        return filteredSdpLines.joinToString("\r\n") + "\r\n"
     }
 
     private fun buildRtpPacket(data: ByteArray): ByteArray {

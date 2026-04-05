@@ -423,7 +423,8 @@ class AudioCaptureService : Service() {
         }
 
         // 若设备上报了具体能力集但全部被过滤（理论上不应发生），用 L16+plain 兜底
-        return candidates.ifEmpty {
+        val l16OnlyCandidates = candidates.filterNot { it.useAlac }
+        return l16OnlyCandidates.ifEmpty {
             LogServer.log("buildCompatibilityModes: no matching modes, falling back to L16+plain")
             listOf(RaopCompatibilityMode("L16 + plain", useAlac = false, useEncryption = false, rsaPadding = "OAEP"))
         }
