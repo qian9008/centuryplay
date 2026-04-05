@@ -29,7 +29,8 @@ import kotlin.random.Random
  */
 class RaopClient(
     private val host: String,
-    private val port: Int
+    private val port: Int,
+    private val streamLatencyMsOverride: Long? = null
 ) {
     companion object {
         private const val TAG = "RaopClient"
@@ -38,6 +39,7 @@ class RaopClient(
         private const val CHANNELS = 2
         private const val BITS_PER_SAMPLE = 16
         private const val FRAMES_PER_PACKET = 352
+        private const val DEFAULT_STREAM_LATENCY_MS = 1100L
     }
     
     // Client identifiers (as per AirPlay spec)
@@ -78,6 +80,8 @@ class RaopClient(
     private var rtpSequence: Int = Random.nextInt(0xFFFF)
     private var rtpTimestamp: Long = Random.nextLong(0xFFFFFFFFL)
     private val ssrc: Int = Random.nextInt()
+    private val streamLatencyMs: Long = (streamLatencyMsOverride ?: DEFAULT_STREAM_LATENCY_MS).coerceIn(250L, 5000L)
+    private val streamLatencySamples: Long = (streamLatencyMs * SAMPLE_RATE / 1000L)
 
     // Audio buffer for PCM data
     private val alacEncoder = AlacEncoder()
@@ -465,13 +469,10 @@ class RaopClient(
         syncSequence = 0
         
         // Record the starting point: this RTP timestamp corresponds to this NTP time + latency
-        // Latency of ~2.5 seconds (110250 samples) gives the receiver time to buffer
-        val latencyMs = 2500L
-        val latencySamples = (latencyMs * SAMPLE_RATE / 1000)
         syncStartRtpTimestamp = rtpTimestamp
         syncStartTimeMs = System.currentTimeMillis()
         
-        logD("Sync timing established: rtpTimestamp=$syncStartRtpTimestamp at time=$syncStartTimeMs, latency=${latencyMs}ms")
+        logD("Sync timing established: rtpTimestamp=$syncStartRtpTimestamp at time=$syncStartTimeMs, latency=${streamLatencyMs}ms")
         
         Thread {
             try {
@@ -492,10 +493,10 @@ class RaopClient(
                         val currentPlayRtp = syncStartRtpTimestamp + elapsedSamples
                         
                         // The NTP time for this RTP timestamp is: now + latency
-                        val playTimeMs = now + latencyMs
+                        val playTimeMs = now + streamLatencyMs
                         
                         // Build sync packet
-                        val syncPacket = buildSyncPacket(currentPlayRtp, playTimeMs, latencySamples)
+                        val syncPacket = buildSyncPacket(currentPlayRtp, playTimeMs, streamLatencySamples)
                         val packet = DatagramPacket(syncPacket, syncPacket.size, address, serverControlPort)
                         socket.send(packet)
                         

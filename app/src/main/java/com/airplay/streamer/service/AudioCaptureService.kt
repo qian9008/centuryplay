@@ -21,6 +21,7 @@ import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import com.airplay.streamer.MainActivity
 import com.airplay.streamer.R
+import com.airplay.streamer.SettingsActivity
 import com.airplay.streamer.raop.RaopClient
 import com.airplay.streamer.util.LogServer
 import kotlinx.coroutines.CoroutineScope
@@ -133,7 +134,13 @@ class AudioCaptureService : Service() {
 
                 // AirPlay 1 (RAOP) Path
                 LogServer.log("Starting AirPlay 1 (RAOP) connection to $host:$port")
-                raopClient = RaopClient(host, port)
+                val prefs = getSharedPreferences(SettingsActivity.PREFS_NAME, MODE_PRIVATE)
+                val streamLatencyMs = prefs.getLong(SettingsActivity.KEY_STREAM_LATENCY_MS, 1100L)
+                raopClient = RaopClient(
+                    host = host,
+                    port = port,
+                    streamLatencyMsOverride = streamLatencyMs
+                )
                 
                 // Set callback to handle server disconnects
                 raopClient?.callback = object : RaopClient.StreamingCallback {

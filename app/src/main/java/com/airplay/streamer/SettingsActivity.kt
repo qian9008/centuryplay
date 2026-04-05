@@ -24,6 +24,7 @@ class SettingsActivity : AppCompatActivity() {
         const val PREFS_NAME = "airplay_prefs"
         const val KEY_DEBUG_MODE = "debug_mode"
         const val KEY_MANUAL_HOST = "manual_host"
+        const val KEY_STREAM_LATENCY_MS = "stream_latency_ms"
     }
 
     private lateinit var prefs: SharedPreferences
@@ -128,6 +129,21 @@ class SettingsActivity : AppCompatActivity() {
         autoConnectSwitch.isChecked = prefs.getBoolean("auto_connect", false)
         autoConnectSwitch.setOnCheckedChangeListener { _, isChecked ->
             prefs.edit().putBoolean("auto_connect", isChecked).apply()
+        }
+
+        // Audio stream latency (ms)
+        val latencyInput = findViewById<EditText>(R.id.streamLatencyInputGeneral)
+        val saveLatencyButton = findViewById<MaterialButton>(R.id.saveLatencyButton)
+        latencyInput.setText(prefs.getLong(KEY_STREAM_LATENCY_MS, 1100L).toString())
+        saveLatencyButton.setOnClickListener {
+            val text = latencyInput.text?.toString()?.trim().orEmpty()
+            val parsed = text.toLongOrNull()
+            if (parsed == null || parsed !in 250L..5000L) {
+                Toast.makeText(this, "Latency must be 250-5000 ms", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            prefs.edit().putLong(KEY_STREAM_LATENCY_MS, parsed).apply()
+            Toast.makeText(this, "Latency saved: ${parsed}ms", Toast.LENGTH_SHORT).show()
         }
     }
 
