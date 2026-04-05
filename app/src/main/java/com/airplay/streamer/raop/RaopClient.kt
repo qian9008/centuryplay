@@ -49,6 +49,7 @@ class RaopClient(
         private const val CHANNELS = 2
         private const val BITS_PER_SAMPLE = 16
         private const val FRAMES_PER_PACKET = 352
+        private const val PACKET_DURATION_NS = (FRAMES_PER_PACKET * 1_000_000_000L) / SAMPLE_RATE
         private const val DEFAULT_STREAM_LATENCY_MS = 1100L
         private const val RSA_PADDING_OAEP = "OAEP"
         private const val RSA_PADDING_PKCS1 = "PKCS1"
@@ -109,6 +110,7 @@ class RaopClient(
     private var rtpSequence: Int = Random.nextInt(0xFFFF)
     private var rtpTimestamp: Long = Random.nextLong(0xFFFFFFFFL)
     private val ssrc: Int = Random.nextInt()
+    private var expectedPacketSendTimeNs: Long = 0L
 
     // Audio buffer for PCM data
     private val alacEncoder = AlacEncoder()
@@ -1021,6 +1023,8 @@ class RaopClient(
                     } else {
                         encodedData  // Send unencrypted for testing
                     }
+
+                    pacePacketSend()
                     
                     // Build RTP packet with payload
                     val rtpPacket = buildRtpPacket(payloadData)
@@ -1226,6 +1230,7 @@ class RaopClient(
         syncSequence = 0
         rtpSequence = Random.nextInt(0xFFFF)
         rtpTimestamp = Random.nextLong(0xFFFFFFFFL)
+        expectedPacketSendTimeNs = 0L
         synchronized(retransmitCache) {
             retransmitCache.clear()
         }
@@ -1631,6 +1636,28 @@ class RaopClient(
 
     private fun generateSessionId(): String {
         return Random.nextLong(0, Long.MAX_VALUE).toString()
+    }
+
+    private fun pacePacketSend() {
+        val now = System.nanoTime()
+        if (expectedPacketSendTimeNs == 0L) {
+            expectedPacketSendTimeNs = now
+            return
+        }
+
+        val waitNs = expectedPacketSendTimeNs - now
+        if (waitNs > 0) {
+            val waitMs = waitNs / 1_000_000L
+            val remNs = (waitNs % 1_000_000L).toInt()
+            try {
+                Thread.sleep(waitMs, remNs)
+            } catch (_: Exception) {}
+        } else if (waitNs < -200_000_000L) {
+            // If sender thread is far behind, reset cadence baseline to avoid bursting.
+            expectedPacketSendTimeNs = System.nanoTime()
+        }
+
+        expectedPacketSendTimeNs += PACKET_DURATION_NS
     }
 
     private fun generateClientId(): String {
