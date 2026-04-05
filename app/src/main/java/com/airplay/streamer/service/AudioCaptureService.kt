@@ -90,6 +90,7 @@ class AudioCaptureService : Service() {
     private val raopFlowMutex = Mutex()
     private val clientTokenGen = AtomicLong(0L)
     @Volatile private var activeClientToken: Long = 0L
+    @Volatile private var lastStopAtMs: Long = 0L
 
     private var isCapturing = false
     private var deviceName: String = "AirPlay Speaker"
@@ -257,8 +258,14 @@ class AudioCaptureService : Service() {
     ): Boolean {
         return raopFlowMutex.withLock {
             teardownJob?.join()
+            val sinceStop = System.currentTimeMillis() - lastStopAtMs
+            if (sinceStop in 0..1800) {
+                val wait = 1800 - sinceStop
+                LogServer.log("Reconnect cooldown: waiting ${wait}ms before ANNOUNCE")
+                delay(wait)
+            }
             val modes = buildCompatibilityModes(codecCapabilities, encryptionCapabilities)
-            val maxAttemptsPerMode = 3
+            val maxAttemptsPerMode = 2
 
             while (serviceScope.isActive && !shouldStayStopped && currentModeIndex < modes.size) {
                 val mode = modes[currentModeIndex]
@@ -271,13 +278,8 @@ class AudioCaptureService : Service() {
 
                     kotlinx.coroutines.yield()
 
-                    raopClient?.callback = null
-                    try {
-                        raopClient?.disconnect()
-                    } catch (_: Exception) {}
-
                     // Give receiver enough time to retire old RTSP session before next ANNOUNCE.
-                    val backoffMs = 1200L + (attempt - 1) * 500L
+                    val backoffMs = if (attempt == 1) 0L else 2200L
                     delay(backoffMs)
 
                     // Read transport mode preference
@@ -332,6 +334,9 @@ class AudioCaptureService : Service() {
                         LogServer.log("RAOP connection established")
                         return@withLock true
                     }
+                    try { raopClient?.disconnect() } catch (_: Exception) {}
+                    raopClient?.callback = null
+                    raopClient = null
                 }
 
                 currentModeIndex++
@@ -628,6 +633,7 @@ class AudioCaptureService : Service() {
 
     private fun stopCapture(stopProjection: Boolean) {
         activeClientToken = clientTokenGen.incrementAndGet()
+        lastStopAtMs = System.currentTimeMillis()
         isCapturing = false
         
         android.os.Handler(android.os.Looper.getMainLooper()).post {
