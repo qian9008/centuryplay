@@ -141,7 +141,8 @@ class SettingsActivity : AppCompatActivity() {
         val debugSwitch = findViewById<MaterialSwitch>(R.id.debugModeSwitch)
         val debugSection = findViewById<LinearLayout>(R.id.debugSection)
         val manualHostInput = findViewById<EditText>(R.id.manualHostInput)
-        val streamLatencyInput = findViewById<EditText>(R.id.streamLatencyInput)
+        val streamLatencyInputId = resources.getIdentifier("streamLatencyInput", "id", packageName)
+        val streamLatencyInput = if (streamLatencyInputId != 0) findViewById<EditText>(streamLatencyInputId) else null
         val connectButton = findViewById<MaterialButton>(R.id.manualConnectButton)
 
         val debugEnabled = prefs.getBoolean(KEY_DEBUG_MODE, false)
@@ -150,7 +151,7 @@ class SettingsActivity : AppCompatActivity() {
 
         // Load saved host
         manualHostInput.setText(prefs.getString(KEY_MANUAL_HOST, "192.168.1.100:5000"))
-        streamLatencyInput.setText(prefs.getLong(KEY_STREAM_LATENCY_MS, 1100L).toString())
+        streamLatencyInput?.setText(prefs.getLong(KEY_STREAM_LATENCY_MS, 1100L).toString())
 
         debugSwitch.setOnCheckedChangeListener { _, isChecked ->
             prefs.edit { putBoolean(KEY_DEBUG_MODE, isChecked) }
@@ -159,7 +160,7 @@ class SettingsActivity : AppCompatActivity() {
 
         connectButton.setOnClickListener {
             val input = manualHostInput.text.toString().trim()
-            val latencyInput = streamLatencyInput.text?.toString()?.trim().orEmpty()
+            val latencyInput = streamLatencyInput?.text?.toString()?.trim().orEmpty()
             if (input.isNotEmpty()) {
                 prefs.edit { putString(KEY_MANUAL_HOST, input) }
                 if (latencyInput.isNotEmpty()) {
