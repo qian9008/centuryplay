@@ -28,7 +28,6 @@ import com.airplay.streamer.ui.MainViewModel
 import com.airplay.streamer.ui.SpeakerAdapter
 import com.airplay.streamer.util.LogServer
 import com.google.android.material.color.DynamicColors
-import com.google.android.material.slider.Slider
 import kotlinx.coroutines.launch
 
 class MainActivity : AppCompatActivity() {
@@ -230,14 +229,17 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, "Refreshing...", Toast.LENGTH_SHORT).show()
         }
 
-        // Avoid zipper noise on some receivers by applying volume on drag end.
-        binding.volumeSlider.addOnSliderTouchListener(object : Slider.OnSliderTouchListener {
-            override fun onStartTrackingTouch(slider: Slider) = Unit
-
-            override fun onStopTrackingTouch(slider: Slider) {
-                AudioCaptureService.instance?.setVolume(slider.value)
-            }
-        })
+        val volumeDebounceHandler = android.os.Handler(mainLooper)
+        var pendingVolume = binding.volumeSlider.getValue()
+        val applyVolumeRunnable = Runnable {
+            AudioCaptureService.instance?.setVolume(pendingVolume)
+        }
+        binding.volumeSlider.addOnChangeListener { value, fromUser ->
+            if (!fromUser) return@addOnChangeListener
+            pendingVolume = value
+            volumeDebounceHandler.removeCallbacks(applyVolumeRunnable)
+            volumeDebounceHandler.postDelayed(applyVolumeRunnable, 120L)
+        }
         
         // Set initial volume to 80%
         binding.volumeSlider.setValue(0.8f)

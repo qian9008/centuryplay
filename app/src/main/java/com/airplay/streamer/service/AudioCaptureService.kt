@@ -247,65 +247,72 @@ class AudioCaptureService : Service() {
         encryptionCapabilities: String?
     ): Boolean {
         val modes = buildCompatibilityModes(codecCapabilities, encryptionCapabilities)
+        val maxAttemptsPerMode = 3
 
         while (serviceScope.isActive && !shouldStayStopped && currentModeIndex < modes.size) {
             val mode = modes[currentModeIndex]
             activeMode = mode
             connectedAtMs = 0L
-            LogServer.log("Trying RAOP mode ${currentModeIndex + 1}/${modes.size}: ${mode.label}")
+            var attempt = 0
+            while (serviceScope.isActive && !shouldStayStopped && attempt < maxAttemptsPerMode) {
+                attempt++
+                LogServer.log("Trying RAOP mode ${currentModeIndex + 1}/${modes.size}: ${mode.label} (attempt $attempt/$maxAttemptsPerMode)")
 
-            kotlinx.coroutines.yield()
+                kotlinx.coroutines.yield()
 
-            raopClient?.callback = null
-            try {
-                raopClient?.disconnect()
-            } catch (_: Exception) {}
-            // Give receiver a brief window to retire old RTSP session before next ANNOUNCE.
-            delay(350)
-            
-            // Read transport mode preference
-            val prefs = getSharedPreferences(SettingsActivity.PREFS_NAME, MODE_PRIVATE)
-            val transportMode = prefs.getString(SettingsActivity.KEY_TRANSPORT_MODE, SettingsActivity.TRANSPORT_AUTO)
-            val streamLatencyMs = prefs.getLong(SettingsActivity.KEY_STREAM_LATENCY_MS, 1100L)
-            
-            raopClient = RaopClient(
-                host = host,
-                port = port,
-                codecCapabilities = codecCapabilities,
-                encryptionCapabilities = encryptionCapabilities,
-                rtspPassword = rtspPassword,
-                forceAlacEncoding = mode.useAlac,
-                forceEncryption = mode.useEncryption,
-                rsaPaddingMode = mode.rsaPadding,
-                modeLabel = mode.label,
-                streamLatencyMsOverride = streamLatencyMs,
-                transportMode = transportMode
-            )
+                raopClient?.callback = null
+                try {
+                    raopClient?.disconnect()
+                } catch (_: Exception) {}
 
-            raopClient?.callback = object : RaopClient.StreamingCallback {
-                override fun onConnected() {
-                    connectedAtMs = System.currentTimeMillis()
-                    LogServer.log("RAOP callback: Connected with ${mode.label}")
-                }
+                // Give receiver enough time to retire old RTSP session before next ANNOUNCE.
+                val backoffMs = 1200L + (attempt - 1) * 500L
+                delay(backoffMs)
 
-                override fun onDisconnected() {
-                    if (connectedAtMs == 0L) {
-                        LogServer.log("RAOP callback: Disconnected before stream start on ${mode.label}")
-                        return
+                // Read transport mode preference
+                val prefs = getSharedPreferences(SettingsActivity.PREFS_NAME, MODE_PRIVATE)
+                val transportMode = prefs.getString(SettingsActivity.KEY_TRANSPORT_MODE, SettingsActivity.TRANSPORT_AUTO)
+                val streamLatencyMs = prefs.getLong(SettingsActivity.KEY_STREAM_LATENCY_MS, 1100L)
+
+                raopClient = RaopClient(
+                    host = host,
+                    port = port,
+                    codecCapabilities = codecCapabilities,
+                    encryptionCapabilities = encryptionCapabilities,
+                    rtspPassword = rtspPassword,
+                    forceAlacEncoding = mode.useAlac,
+                    forceEncryption = mode.useEncryption,
+                    rsaPaddingMode = mode.rsaPadding,
+                    modeLabel = mode.label,
+                    streamLatencyMsOverride = streamLatencyMs,
+                    transportMode = transportMode
+                )
+
+                raopClient?.callback = object : RaopClient.StreamingCallback {
+                    override fun onConnected() {
+                        connectedAtMs = System.currentTimeMillis()
+                        LogServer.log("RAOP callback: Connected with ${mode.label}")
                     }
-                    LogServer.log("RAOP callback: Server disconnected on ${mode.label}")
-                    handleRaopDisconnect()
+
+                    override fun onDisconnected() {
+                        if (connectedAtMs == 0L) {
+                            LogServer.log("RAOP callback: Disconnected before stream start on ${mode.label}")
+                            return
+                        }
+                        LogServer.log("RAOP callback: Server disconnected on ${mode.label}")
+                        handleRaopDisconnect()
+                    }
+
+                    override fun onError(error: String) {
+                        LogServer.log("RAOP callback: Error on ${mode.label} - $error")
+                    }
                 }
 
-                override fun onError(error: String) {
-                    LogServer.log("RAOP callback: Error on ${mode.label} - $error")
+                val connected = raopClient?.connect() ?: false
+                if (connected) {
+                    LogServer.log("RAOP connection established")
+                    return true
                 }
-            }
-
-            val connected = raopClient?.connect() ?: false
-            if (connected) {
-                LogServer.log("RAOP connection established")
-                return true
             }
 
             currentModeIndex++
