@@ -92,7 +92,7 @@ class RaopClient(
     private val cSeq = AtomicInteger(0)
     private var sessionId: String? = null
     private var serverSessionId: String? = null
-    private val localSessionId: String = Random.nextLong(0, Long.MAX_VALUE).toString()
+    private var localSessionId: String = Random.nextLong(0, Long.MAX_VALUE).toString()
     private var serverPort: Int = 0
     private var serverControlPort: Int = 0  // Server's control port for sync packets
     private var serverTimingPort: Int = 0   // Server's timing port
@@ -161,6 +161,7 @@ class RaopClient(
      */
     suspend fun connect(): Boolean = withContext(Dispatchers.IO) {
         try {
+            resetSessionForFreshConnect()
             logD("Connecting to $host:$port mode=${modeLabel ?: "<default>"}")
             configureCompatibility()
             
@@ -1023,8 +1024,17 @@ class RaopClient(
         // Give threads a moment to notice the flags
         try { Thread.sleep(100) } catch (_: Exception) {}
         
-        // Send TEARDOWN if we were connected (with timeout)
+        // Send FLUSH + TEARDOWN if we were connected (with timeout)
         if (wasConnected) {
+            try {
+                logD("Sending FLUSH request...")
+                rtspSocket?.soTimeout = 2000
+                val flushRequest = buildRtspRequest("FLUSH", sessionId = serverSessionId)
+                val flushResponse = sendRtspRequest(flushRequest)
+                logD("FLUSH response: ${flushResponse?.first}")
+            } catch (e: Exception) {
+                logD("FLUSH failed (expected if connection lost): ${e.message}")
+            }
             try {
                 logD("Sending TEARDOWN request...")
                 rtspSocket?.soTimeout = 2000  // 2 second timeout for teardown
@@ -1101,6 +1111,25 @@ class RaopClient(
         digestNonceCount = 0
         logD("Teardown complete")
         callback?.onDisconnected()
+    }
+
+    private fun resetSessionForFreshConnect() {
+        // Reconnect must use a fresh RTSP URL/session identity, otherwise some receivers
+        // may keep the old session and reject the next ANNOUNCE/SETUP with 453-like errors.
+        localSessionId = generateSessionId()
+        cSeq.set(0)
+        sessionId = null
+        serverSessionId = null
+        digestChallenge = null
+        cachedAuthorizationHeader = null
+        digestNonceCount = 0
+        syncSequence = 0
+        rtpSequence = Random.nextInt(0xFFFF)
+        rtpTimestamp = Random.nextLong(0xFFFFFFFFL)
+        synchronized(retransmitCache) {
+            retransmitCache.clear()
+        }
+        logD("Prepared fresh RAOP session: localSessionId=$localSessionId")
     }
     
     /**
